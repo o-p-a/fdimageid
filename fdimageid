@@ -1,0 +1,799 @@
+#! /usr/bin/ruby -E:UTF-8
+# -*- mode:Ruby; tab-width:4; coding:UTF-8; -*-
+# vi:set ft=ruby ts=4 fenc=UTF-8 :
+#----------------------------------------------------------------
+# フロッピーディスクイメージファイルの識別
+#
+# 2024/09/14 opa⁠🙂
+#----------------------------------------------------------------
+
+require "optparse"
+require "pp"
+
+ProgName = "fdimageid"
+Version = "0.01"
+#=====dpk===== Copyright2024
+Copyright = "Copyright (c) 2024 by opa"
+#=====dpk=====
+
+class String
+	def to_byte
+		return unpack("C")[0]
+	end
+
+	def to_word
+		return unpack("v")[0]
+	end
+
+	def to_dword
+		return unpack("V")[0]
+	end
+end
+
+def read_file(filename, offset=0, length=nil)
+	return IO.binread(filename, length, offset)
+end
+
+def write_file(filename, data)
+	return IO.binwrite(filename, data)
+end
+
+def filetype_is_dcu?(filedata)
+	filesize = filedata.length
+	media_type = filedata[0].to_byte
+	track_map = filedata[1, 160].unpack("C*")
+
+	track_map_ok = true
+	track_map.each do |t|
+		if t != 0 && t != 1
+			track_map_ok = false
+			break
+		end
+	end
+	return false  if !track_map_ok
+
+	if media_type == 0x01 && filesize == 162 + 1261568
+		return true
+	elsif media_type == 0x02 && filesize == 162 + 1228800
+		return true
+	elsif media_type == 0x03 && filesize == 162 + 1474560
+		return true
+	elsif media_type == 0x04 && filesize == 162 + 655360
+		return true
+	elsif media_type == 0x05 && filesize == 162 + 737280
+		return true
+	elsif media_type == 0x08 && filesize == 162 + 1474560
+		return true
+	elsif media_type == 0x11 && filesize == 162 + 128*26 + 256*26*153
+		return true
+	elsif media_type == 0x19 && filesize == 162 + 655360
+		return true
+	elsif media_type == 0x21 && filesize == 162 + 1064960
+		return true
+	end
+
+	return false
+end
+
+def filetype_is_dim?(filedata)
+	return filedata[171, 15] == "DIFC HEADER  \0\0"
+end
+
+def filetype_is_d88?(filedata)
+	return filedata[0x10, 10] == "\0" * 10 &&
+		[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
+		filedata.length == filedata[0x1c, 4].to_dword
+end
+
+def same_data_msg(from_track, to_track, value)
+	if from_track == to_track
+		$stdout.print("  トラック#{from_track}は全て#{value.ord.to_s(16)}hです\n")
+	else
+		$stdout.print("  トラック#{from_track}～#{to_track}は全て#{value.ord.to_s(16)}hです\n")
+	end
+end
+
+# トラックのデータの状況
+def track_report(filedata, sector_byte = 1024, nsectors = 8, ntracks = 2 * 77)
+	track_length = sector_byte * nsectors
+	$stdout.print("  #{sector_byte}バイト × #{nsectors}セクタ × #{ntracks}トラック\n")
+
+	filled_data_value = nil
+	filled_data_from = nil
+	(0 ... ntracks).each do |track|
+		track_data = filedata[track * track_length, track_length]
+		if track_data == track_data[0] * track_data.length
+			if track_data[0] == filled_data_value
+				# NOP (同データが継続)
+			else
+				if filled_data_value
+					same_data_msg(filled_data_from + 1, track, filled_data_value)
+				end
+				filled_data_value = track_data[0]
+				filled_data_from = track
+			end
+		elsif filled_data_value
+			same_data_msg(filled_data_from + 1, track, filled_data_value)
+			filled_data_value = nil
+		end
+	end
+	if filled_data_value
+		same_data_msg(filled_data_from + 1, ntracks, filled_data_value)
+	end
+end
+
+def fdimageid(filename)
+	filedata = read_file(filename)
+	filesize = filedata.length
+
+	case
+	# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
+	when filedata[0, 7] == "VFD1.00"
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  Virtual98形式 [.fdd]\n")
+
+	# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
+	when filetype_is_dim?(filedata)
+		$stdout.print("#{filename}:\n")
+
+		# DIFC.X version
+		difc_ver = filedata[0xfe].to_byte
+
+		$stdout.print("  X68000 DIFC.X形式(v#{difc_ver}) [.dim]\n")
+
+		# フォーマット種別
+		format_flag = filedata[0].to_byte
+		case format_flag
+		when 0x00
+			format_flag_s = "00h: 2HD(1.23MB)"
+			ntracks_std = 154
+			track_length = 1024 * 8
+		when 0x01
+			format_flag_s = "01h: 2HS(1.44MB)"
+			ntracks_std = 160
+			track_length = 1024 * 9
+		when 0x02
+			format_flag_s = "02h: 2HC(1.2MB)"
+			ntracks_std = 160
+			track_length = 512 * 15
+		when 0x03
+			format_flag_s = "03h: 2HDE(1.44MB)"
+			ntracks_std = 160
+			track_length = 1024 * 9
+		when 0x09
+			format_flag_s = "09h: 2HQ(1.44MB)"
+			ntracks_std = 160
+			track_length = 512 * 18
+		else
+			format_flag_s = "不明(#{format_flag.to_s(16)}h)"
+			ntracks_std = 0
+			track_length = 0
+		end
+
+		$stdout.print("  フォーマット種別: #{format_flag_s}\n")
+		$stdout.print("  #{track_length}バイト/トラック\n")
+
+		# 総トラック数 (0の場合もある)
+		ntracks = filedata[0xff].to_byte
+		$stdout.print("  ヘッダのトラック数: #{ntracks}トラック\n")  if ntracks > 0
+
+		# トラックの保存状態
+		xtracks = 0
+		filled_data_value = nil
+		filled_data_from = nil
+		filedata[1, 170].unpack("C*").each.with_index(1) do |flag, track|
+			case flag
+			when 0 # なし
+				if filled_data_value
+					same_data_msg(filled_data_from, track-1, filled_data_value)
+					filled_data_value = nil
+				end
+			when 1 # あり
+				track_data = filedata[256 + xtracks * track_length, track_length]
+				xtracks += 1
+				if track_data == track_data[0] * track_data.length
+					if track_data[0] == filled_data_value
+						# NOP (同データが継続)
+					else
+						if filled_data_value
+							same_data_msg(filled_data_from, track-1, filled_data_value)
+						end
+						filled_data_value = track_data[0]
+						filled_data_from = track
+					end
+				elsif filled_data_value
+					same_data_msg(filled_data_from, track-1, filled_data_value)
+					filled_data_value = nil
+				end
+			else
+				$stderr.print("#{ProgName}: トラック保存状態が不正: #{flag}\n")
+			end
+		end
+		if filled_data_value
+			same_data_msg(filled_data_from, 170, filled_data_value)
+		end
+
+		if xtracks == ntracks_std
+			$stdout.print("  #{xtracks}トラック(標準)のデータが格納されています\n")
+		else
+			$stdout.print("  #{xtracks}トラック分のデータが格納されています(標準は#{ntracks_std})\n")
+		end
+
+		if filesize != 256 + xtracks * track_length
+			$stdout.print("  ファイルサイズが不正(#{filesize}バイト)\n")
+		end
+
+	# T98Next R0(.nfd) ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
+	when filedata[0, 15] == "T98FDDIMAGE.R0\0"
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  T98-Next NFD r0形式 [.nfd]\n")
+
+		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
+		flProtect = filedata[0x10 + 0x100 + 4].to_byte
+
+		$stdout.print("  コメント: #{szComment.inspect}\n")  if !szComment.empty?
+		$stdout.print("  ヘッダサイズ: #{dwHeadSize}バイト\n")
+		$stdout.print("  読み取り専用\n")  if flProtect != 0
+
+		trackInfo = []
+		(0 ... 163).each do |track|
+			trackInfo[track] = { sectorInfo:[] }
+			(0 ... 26).each do |sector|
+				w = {}
+				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:byST0], w[:byST1], w[:byST2], w[:byPDA] =
+					filedata[0x10 + 0x100 + 0x10 + (track * 26 + sector) * 0x10, 11].unpack("C*")
+				w[:byST0] &= 0xfb # Head Address は無視
+				trackInfo[track][:sectorInfo] << w  if w[:c] != 0xff
+			end
+		end
+
+		minval = {}
+		maxval = {}
+		minnsec = nil
+		maxnsec = nil
+		trackInfo.each do |ti|
+			next  if ti[:sectorInfo].empty?
+
+			ti[:sectorInfo].each do |si|
+				[:c, :h, :r, :n, :flMFM, :flDDAM, :byStatus, :byST0, :byST1, :byST2, :byPDA].each do |member|
+					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
+					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
+				end
+			end
+			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
+			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
+		end
+
+		ntracks = trackInfo.count { |ti| !ti[:sectorInfo].empty? }
+		ntracks_s = "#{ntracks}トラック"
+
+		sector_size = 128 << maxval[:n]
+		if maxval[:n] == minval[:n]
+			sector_size_s = "#{sector_size}バイト"
+		else
+			sector_size_s = "#{sector_size}バイト(混在あり)"
+		end
+
+		nsectors = maxnsec
+		if maxnsec == minnsec
+			nsectors_s = "#{nsectors}セクタ"
+		else
+			nsectors_s = "#{nsectors}セクタ(混在あり)"
+		end
+
+		byPDA = maxval[:byPDA]
+		case byPDA
+		when 0x90
+			byPDA_s = "90h: 2HD(1.2MB)"
+		when 0x30
+			byPDA_s = "30h: 2HD(1.44MB)"
+		when 0x10
+			byPDA_s = "10h: 2DD(640KB)"
+		else
+			byPDA_s = "#{byPDA.to_s(16)}h"
+		end
+		if maxval[:byPDA] != minval[:byPDA]
+			byPDA_s += "(混在)"
+		end
+
+		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
+		$stdout.print("  FM/MFM混在\n")  if maxval[:flMFM] != minval[:flMFM]
+		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:flDDAM] != 0
+		$stdout.print("  BIOS Resultが0以外のセクタがあります\n")  if maxval[:byStatus] != 0
+		$stdout.print("  FDC Store Status 0が0以外のセクタがあります\n")  if maxval[:byST0] != 0
+		$stdout.print("  FDC Store Status 1が0以外のセクタがあります\n")  if maxval[:byST1] != 0
+		$stdout.print("  FDC Store Status 2が0以外のセクタがあります\n")  if maxval[:byST2] != 0
+		$stdout.print("  PDAデバイスアドレス: #{byPDA_s}\n")
+
+	# T98Next R1(.nfd) ヘッダ(全体+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
+	when filedata[0, 15] == "T98FDDIMAGE.R1\0"
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  T98-Next NFD r1形式 [.nfd]\n")
+
+		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
+		flProtect = filedata[0x10 + 0x100 + 4].to_byte
+
+		$stdout.print("  コメント: #{szComment.inspect}\n")  if !szComment.empty?
+		$stdout.print("  ヘッダサイズ: #{dwHeadSize}バイト\n")
+		$stdout.print("  読み取り専用\n")  if flProtect != 0
+
+		trackInfo = []
+		dwTrackHead = filedata[0x10 + 0x100 + 0x10, 4 * 164].unpack("V*")
+		(0 ... dwTrackHead.length).each do |track|
+			track_offset = dwTrackHead[track]
+			next  if track_offset == 0
+
+			wSector, wDiag = filedata[track_offset, 2 * 2].unpack("vv")
+			trackInfo[track] = { sectorInfo:[], diagInfo:[] }
+
+			(0 ... wSector).each do |sector|
+				w = {}
+				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:bySTS0], w[:bySTS1], w[:bySTS2], w[:byRetry], w[:byPDA] =
+					filedata[track_offset + 0x10 + sector * 0x10, 12].unpack("C*")
+				w[:bySTS0] &= 0xfb # Head Address は無視
+				trackInfo[track][:sectorInfo] << w
+			end
+
+			(0 ... wDiag).each do |diag|
+				w = {}
+				w[:cmd], w[:c], w[:h], w[:r], w[:n], w[:byStatus], w[:bySTS0], w[:bySTS1], w[:bySTS2], w[:byRetry], w[:dwDataLen], w[:byPDA] =
+					filedata[track_offset + 0x10 + wSector * 0x10 + diag * 0x10, 15].unpack("C10VC")
+				trackInfo[track][:diagInfo] << w
+			end
+		end
+
+		minval = {}
+		maxval = {}
+		minnsec = nil
+		maxnsec = nil
+		trackInfo.each do |ti|
+			ti[:sectorInfo].each do |si|
+				[:c, :h, :r, :n, :flMFM, :flDDAM, :byStatus, :bySTS0, :bySTS1, :bySTS2, :byRetry, :byPDA].each do |member|
+					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
+					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
+				end
+			end
+			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
+			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
+
+			ti[:diagInfo].each do |di|
+				$stdout.print("  特殊読み込みセクタ: Cmd:#{di[:cmd]} C:#{di[:c]} H:#{di[:h]} R:#{di[:r]} N:#{di[:n]} STS:#{di[:bySTS0]},#{di[:bySTS1]},#{di[:bySTS2]} Status:#{di[:byStatus]} Retry:#{di[:byRetry]} DataLen:#{di[:dwDataLen]}\n")
+			end
+		end
+
+		ntracks = trackInfo.length
+		ntracks_s = "#{ntracks}トラック"
+
+		sector_size = 128 << maxval[:n]
+		if maxval[:n] == minval[:n]
+			sector_size_s = "#{sector_size}バイト"
+		else
+			sector_size_s = "#{sector_size}バイト(混在あり)"
+		end
+
+		nsectors = maxnsec
+		if maxnsec == minnsec
+			nsectors_s = "#{nsectors}セクタ"
+		else
+			nsectors_s = "#{nsectors}セクタ(混在あり)"
+		end
+
+		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
+		$stdout.print("  FM/MFM混在\n")  if maxval[:flMFM] != minval[:flMFM]
+		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:flDDAM] != 0
+		$stdout.print("  BIOS Resultが0以外のセクタがあります\n")  if maxval[:byStatus] != 0
+		$stdout.print("  FDC Store Status 0が0以外のセクタがあります\n")  if maxval[:bySTS0] != 0
+		$stdout.print("  FDC Store Status 1が0以外のセクタがあります\n")  if maxval[:bySTS1] != 0
+		$stdout.print("  FDC Store Status 2が0以外のセクタがあります\n")  if maxval[:bySTS2] != 0
+		$stdout.print("  不安定データセクタがあります\n")  if maxval[:byRetry] != 0
+		$stdout.print("  PDAデバイスアドレスが0以外のセクタがあります\n")  if maxval[:byPDA] != 0
+
+	# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
+	when filetype_is_d88?(filedata)
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  D88形式 [.d88 .d98 .88d .98d]\n")
+
+		media_flag = filedata[0x1b].to_byte
+		case media_flag
+		when 0x00
+			media_flag_s = "00h: 2D"
+			ntracks_std = 80
+		when 0x10
+			media_flag_s = "10h: 2DD"
+			ntracks_std = 160
+		when 0x20
+			media_flag_s = "20h: 2HD"
+			ntracks_std = 154
+		when 0x21
+			media_flag_s = "21h: 2HD(1.44MB NP2kai)"
+			ntracks_std = 160
+		when 0x30
+			media_flag_s = "30h: 1D"
+			ntracks_std = 40
+		when 0x40
+			media_flag_s = "40h: 1DD"
+			ntracks_std = 80
+		else
+			media_flag_s = "不明(#{media_flag.to_s(16)}h)"
+			ntracks_std = 0
+		end
+
+		$stdout.print("  メディア種別: #{media_flag_s}\n")
+
+		comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		write_protect = filedata[0x1a].to_byte
+
+		$stdout.print("  コメント: #{comment.inspect}\n")  if !comment.empty?
+		$stdout.print("  書き込み禁止(#{write_protect.to_s(16)}h)\n")  if write_protect != 0
+
+		track_offsets = filedata[0x20, 4 * 164].unpack("V*")
+		header_size = track_offsets.find { |o| o != 0 }
+		header_tracks = (header_size - 0x20) / 4
+		track_offsets = track_offsets.first(header_tracks)
+
+		ntracks = track_offsets.length - track_offsets.reverse.find_index { |to| to != 0 } # 最終トラック番号
+		track_offsets = track_offsets.first(ntracks) # 先頭nトラックで切り詰め
+		xtracks = track_offsets.count { |to| to != 0 } # データの有るトラック数
+		if(ntracks == xtracks)
+			ntracks_s = "#{ntracks}トラック"
+		else
+			ntracks_s = "#{ntracks}(#{xtracks})トラック"
+		end
+
+		if ntracks == ntracks_std
+			ntracks_s += "(標準)"
+		else
+			ntracks_s += "(標準は#{ntracks_std})"
+		end
+
+		trackInfo = []
+		trackData = ""
+		track_offsets.each.with_index do |track_offset, track|
+			next  if track_offset == 0
+
+			trackInfo[track] = { sectorInfo:[] }
+			sector_offset = track_offset
+			while true
+				w = {}
+				w[:c], w[:h], w[:r], w[:n], w[:nsectors], w[:density], w[:ddam], w[:status], w[:rpm], w[:datasize] =
+					filedata[sector_offset, 16].unpack("C4vC3x4Cv")
+				sector_offset += 0x10
+
+				if w[:c] > 90 || w[:h] > 1 || w[:r] > 20 || w[:n] > 6
+					$stdout.print("  トラック#{track+1}のCHRN不正: #{w[:c]} #{w[:h]} #{w[:r]} #{w[:n]}\n")
+					break
+				end
+
+				trackInfo[track][:sectorInfo] << w
+
+				nsize = 128 << w[:n]
+				if nsize != w[:datasize]
+					$stdout.print("  セクタのN値とデータサイズが異なります: N:#{nsize} != #{w[:datasize]}\n")
+				end
+				trackData += filedata[sector_offset, nsize]
+				sector_offset += nsize
+
+				if trackInfo[track][:sectorInfo].length >= w[:nsectors]
+					next_track_start = (track_offsets[(track + 1) .. -1].find { |o| o != 0 }) || filesize
+					if sector_offset != next_track_start
+						if sector_offset < next_track_start
+							$stdout.print("  トラック#{track+1}のデータの後に不要なデータがあります\n")
+						else
+							$stdout.print("  トラック#{track+1}のデータが次のトラックに達しています\n")
+						end
+					end
+					break
+				end
+			end
+		end
+
+		minval = {}
+		maxval = {}
+		minnsec = nil
+		maxnsec = nil
+		trackInfo.each do |ti|
+			next  if !ti
+
+			ti[:sectorInfo].each do |si|
+				[:c, :h, :r, :n, :nsectors, :density, :ddam, :status, :rpm].each do |member|
+					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
+					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
+				end
+			end
+			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
+			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
+		end
+
+		sector_size = 128 << maxval[:n]
+		if maxval[:n] == minval[:n]
+			sector_size_s = "#{sector_size}バイト"
+		else
+			sector_size_s = "#{sector_size}バイト(混在あり)"
+		end
+
+		nsectors = maxnsec
+		if maxnsec == minnsec
+			nsectors_s = "#{nsectors}セクタ"
+		else
+			nsectors_s = "#{nsectors}セクタ(混在あり)"
+		end
+
+		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
+		$stdout.print("  FM/MFM混在\n")  if maxval[:density] != minval[:density]
+		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:ddam] != 0
+		$stdout.print("  FDC Statusが0以外のセクタがあります\n")  if maxval[:status] != 0
+		if maxval[:rpm] != 0
+			if maxval[:rpm] == minval[:rpm]
+				$stdout.print("  NP2kai RPM Flagがセットされています\n")
+			else
+				$stdout.print("  NP2kai RPM Flagがセットされています(混在)\n")
+			end
+		end
+
+		# write_file(filename + ".xdf", trackData)
+
+	# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html
+	when filetype_is_dcu?(filedata)
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  DCP/DCU形式 [.dcu .dcp]\n")
+
+		media_type = filedata[0].to_byte
+		case media_type
+		when 0x01
+			media_type_s = "01h: 2HD(1.23MB)"
+		when 0x02
+			media_type_s = "02h: 2HD(1.2MB 2HC)"
+		when 0x03
+			media_type_s = "03h: 2HQ(1.44MB 2HDE)"
+		when 0x04
+			media_type_s = "04h: 2DD(640KB)"
+		when 0x05
+			media_type_s = "05h: 2DD(720KB)"
+		when 0x08
+			media_type_s = "08h: 2HD(1.44MB)"
+		when 0x11
+			media_type_s = "11h: 2HD(Disk BASIC)"
+		when 0x19
+			media_type_s = "19h: 2DD(Disk BASIC)"
+		when 0x21
+			media_type_s = "21h: 2HD(26sector)"
+		else
+			media_type_s = "不明(#{media_type.to_s(16)}h)"
+		end
+
+		$stdout.print("  メディアタイプ: #{media_type_s}\n")
+
+		track_map = filedata[1, 160].unpack("C*")
+		all_cylinders_stored = filedata[0xa1].to_byte
+
+	# Anex86(.fdi) ヘッダ(4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
+	when filedata[0, 4].to_dword == 0 &&
+		[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
+		filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filesize
+
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  Anex86形式 [.fdi]\n")
+
+		fddtype_id = filedata[4, 4].to_dword
+		case fddtype_id
+		when 0x90
+			fddtype_id_s = "90h: 2HD(1.2MB)"
+		when 0x30
+			fddtype_id_s = "30h: 2HD(1.44MB)"
+		when 0x10
+			fddtype_id_s = "10h: 2DD"
+		else
+			fddtype_id_s = "#{fddtype_id.to_s(16)}h"
+		end
+
+		headersize = filedata[0x8, 4].to_dword
+
+		datasize = filedata[0xc, 4].to_dword
+		case datasize
+		when 1474560
+			datasize_s = " 2HD(1.44MB)"
+		when 1261568
+			datasize_s = " 2HD(1.23MB)"
+		when 1228800
+			datasize_s = " 2HD(1.2MB)"
+		when 737280
+			datasize_s = " 2DD(720KB)"
+		when 655360
+			datasize_s = " 2DD(640KB)"
+		else
+			datasize_s = ""
+		end
+
+		$stdout.print("  FDD Type: #{fddtype_id_s}\n")
+		$stdout.print("  ヘッダサイズ: #{headersize}バイト\n")
+		$stdout.print("  データサイズ: #{datasize}バイト#{datasize_s}\n")
+
+	# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
+	when filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
+		filesize == 256 + 1261568
+
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  DIP形式 [.dip]\n")
+
+	# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+	when filedata[0, 4] == "FDIM" &&
+		filedata[4, 4].to_dword == 0x10000 &&
+		filedata[8, 4].to_dword == filesize
+
+		$stdout.print("#{filename}:\n")
+		$stdout.print("  SL9821形式 [.slf]\n")
+
+	# 1.44MB 2HD べた (512バイト×18セクタ×2ヘッド×80シリンダ = 1474560バイト)
+	when filesize == 512 * 18 * 2 * 80
+		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
+
+		track_report(filedata, 512, 18, 2 * 80)
+
+	# 1.23MB 2HD べた (1024バイト×8セクタ×2ヘッド×77シリンダ = 1261568バイト)
+	when filesize == 1024 * 8 * 2 * 77
+		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.23MB PC98) [.xdf .2hd .dup .hdm .tfd]\n")
+
+		track_report(filedata, 1024, 8, 2 * 77)
+
+	# 1.2MB 2HD べた (512バイト×15セクタ×2ヘッド×80シリンダ = 1228800バイト)
+	when filesize == 512 * 15 * 2 * 80
+		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.2MB PC/AT) [.2hd]\n")
+
+		track_report(filedata, 512, 15, 2 * 80)
+
+	# 720KB 2DD べた (512バイト×9セクタ×2ヘッド×80シリンダ = 737280バイト)
+	when filesize == 512 * 9 * 2 * 80
+		$stdout.print("#{filename}:\n  べたイメージ 2DD(720KB MSX) [.dsk]\n")
+
+		track_report(filedata, 512, 9, 2 * 80)
+
+	# 640KB 2DD べた (512バイト×8セクタ×2ヘッド×80シリンダ = 655360バイト)
+	when filesize == 512 * 8 * 2 * 80
+		$stdout.print("#{filename}:\n  べたイメージ 2DD(640KB) [.2dd]\n")
+
+		track_report(filedata, 512, 8, 2 * 80)
+
+	# 320KB 2D べた (512バイト×8セクタ×2ヘッド×40シリンダ = 327680バイト)
+	when filesize == 512 * 8 * 2 * 40
+		$stdout.print("#{filename}:\n  べたイメージ 2D(320KB) [.2d]\n")
+
+		track_report(filedata, 512, 8, 2 * 40)
+
+	else
+		$stdout.print("#{filename}:\n  不明な形式 (#{filesize}バイト)\n")
+	end
+end
+
+# .dim → .xdf 変換
+def strip_dim(filename)
+	if !filetype_is_dim?(filedata)
+		$stderr.print("#{ProgName}: DIFC.X形式ではありません: #{filename}\n")
+		return
+	end
+
+	$stdout.print("#{filename}:\n")
+
+	filedata = read_file(filename)
+	filesize = filedata.length
+	outfilename = filename + ".xdf"
+
+	if filesize == 256 + 1024 * 8 * 2 * 77 # 1261824
+		data = filedata[256, 1024 * 8 * 2 * 77]
+
+		$stdout.print("  → #{outfilename}:\n")
+		write_file(outfilename, data)
+	elsif filesize == 256 + 1024 * 8 * 2 * 80 # 1310976
+		data = filedata[256, 1024 * 8 * 2 * 77]
+		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (80 - 77)]
+		if data2 != data2[0] * data2.length
+			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
+			return
+		end
+
+		$stdout.print("  → #{outfilename}:\n")
+		write_file(outfilename, data)
+	elsif filesize == 256 + 1024 * 8 * 2 * 85 # 1392896
+		data = filedata[256, 1024 * 8 * 2 * 77]
+		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (85 - 77)]
+		if data2 != data2[0] * data2.length
+			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
+			return
+		end
+
+		$stdout.print("  → #{outfilename}:\n")
+		write_file(outfilename, data)
+	else
+		$stdout.print("  不明な形式 (#{filesize}バイト)\n")
+	end
+end
+
+# 9セクタ2DD(720KB)のイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD(640KB)のイメージにする
+def truncate_9(filename)
+	filedata = read_file(filename)
+	filesize = filedata.length
+
+	$stdout.print("#{filename}:\n")
+
+	if filesize == 512 * 9 * 2 * 80
+		outdata = ""
+		(0 ... 2 * 80).each do |track|
+			outdata += filedata[512 * 9 * track, 512 * 8]
+		end
+
+		outfilename = filename + ".xdf"
+		$stdout.print("  → #{outfilename}:\n")
+		write_file(outfilename, outdata)
+	elsif filetype_is_d88?(filedata) && filedata[0x1b].to_byte == 0x10
+		track_offsets = filedata[0x20, 4 * 164].unpack("V*")
+		header_size = track_offsets.find { |o| o != 0 }
+		header_tracks = (header_size - 0x20) / 4
+		track_offsets = track_offsets.first(header_tracks)
+
+		outdata = filedata[0, header_size]
+		(0 ... header_tracks).each do |track|
+			track_offset = track_offsets[track]
+			if track_offset != 0
+				outdata[0x20 + 4 * track, 4] = [outdata.length].pack("V")
+
+				(0 ... 8).each do |r|
+					data = filedata[track_offset + 0x210 * r, 0x210]
+					fail if data[4, 2].to_word != 9
+					data[4, 2] = [8].pack("v")
+					outdata += data
+				end
+			end
+		end
+
+		outdata[0x1c, 4] = [outdata.length].pack("V") # Disk size
+
+		outfilename = filename + ".d88"
+		$stdout.print("  → #{outfilename}:\n")
+		write_file(outfilename, outdata)
+	else
+		$stdout.print("  不明な形式 (#{filesize}バイト)\n")
+	end
+end
+
+def main(args)
+	action = :identify
+
+	args.options do |opt|
+		opt.banner = "#{ProgName} v#{Version} #{Copyright}\n" +
+						"Usage: #{ProgName} [options] file..."
+
+		opt.on("--strip-dim",
+		".dim → .xdf 変換") do
+			action = :strip_dim
+		end
+
+		opt.on("--truncate_9",
+		"9セクタ目を切り捨て") do
+			action = :truncate_9
+		end
+
+		opt.parse!
+		print(opt.help)  if args.empty?
+	end
+
+	args.each do |an_arg|
+		if !File.exist?(an_arg)
+			$stderr.print("#{ProgName}: File not found: #{an_arg}\n")
+			break
+		end
+
+		case action
+		when :identify
+			fdimageid(an_arg)
+		when :strip_dim
+			strip_dim(an_arg)
+		when :truncate_9
+			truncate_9(an_arg)
+		end
+	end
+
+	return 0
+end
+
+exit main(ARGV)
