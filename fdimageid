@@ -17,17 +17,17 @@ Copyright = "Copyright (c) 2024 by opa"
 #=====dpk=====
 
 class String
-	def to_byte
-		return unpack("C")[0]
-	end
+	def to_byte;	unpack("C")[0];	end
+	def to_word;	unpack("v")[0];	end
+	def to_dword;	unpack("V")[0];	end
 
-	def to_word
-		return unpack("v")[0]
-	end
+	def to_bytes;	unpack("C*");	end
+	def to_words;	unpack("v*");	end
+	def to_dwords;	unpack("V*");	end
+end
 
-	def to_dword
-		return unpack("V")[0]
-	end
+class Integer
+	def to_hex;	"#{to_s(16)}h";	end
 end
 
 def read_file(filename, offset=0, length=nil)
@@ -38,58 +38,274 @@ def write_file(filename, data)
 	return IO.binwrite(filename, data)
 end
 
-def filetype_is_dcu?(filedata)
-	filesize = filedata.length
-	media_type = filedata[0].to_byte
-	track_map = filedata[1, 160].unpack("C*")
+class DiskImage
+	def initialize
+		@mediatype = nil # :"1d", :"1dd", :"2d", :"2dd", :"2hd", :unknown
+		@track = []
+		@writeprotect = nil # true:Write Protected false:Writeable
+		@comment = nil
+	end
 
-	track_map_ok = true
-	track_map.each do |t|
-		if t != 0 && t != 1
-			track_map_ok = false
-			break
+	attr_accessor(:mediatype, :track, :writeprotect, :comment)
+
+	def to_h
+		return {
+			mediatype: mediatype,
+			track: track.map{ |t| t && t.to_h },
+			writeprotect: writeprotect,
+			comment: comment,
+		}
+	end
+
+	class Track
+		def initialize
+			@record = []
+		end
+
+		attr_accessor(:record)
+
+		def to_h
+			return {
+				record: record.map{ |r| r && r.to_h },
+			}
 		end
 	end
-	return false  if !track_map_ok
 
-	if media_type == 0x01 && filesize == 162 + 1261568
-		return true
-	elsif media_type == 0x02 && filesize == 162 + 1228800
-		return true
-	elsif media_type == 0x03 && filesize == 162 + 1474560
-		return true
-	elsif media_type == 0x04 && filesize == 162 + 655360
-		return true
-	elsif media_type == 0x05 && filesize == 162 + 737280
-		return true
-	elsif media_type == 0x08 && filesize == 162 + 1474560
-		return true
-	elsif media_type == 0x11 && filesize == 162 + 128*26 + 256*26*153
-		return true
-	elsif media_type == 0x19 && filesize == 162 + 655360
-		return true
-	elsif media_type == 0x21 && filesize == 162 + 1064960
-		return true
+	class Record
+		def initialize
+			@data = nil
+			@c = nil
+			@h = nil
+			@r = nil
+			@n = nil
+			@mfm = nil		# false:FM true:MFM
+			@ddam = nil		# false:DAM true:DDAM
+			@cmd = nil		# BIOS Read Data Command
+			@status = nil	# BIOS Read Data Status 0:Normal Terminate
+			@st0 = nil		# ST0
+			@st1 = nil		# ST1
+			@st2 = nil		# ST2
+			@pda = nil		# PDA 0x90:1.2M 0x30:1.44M 0x10:640K
+		end
+
+		attr_accessor(:data, :c, :h, :r, :n, :mfm, :ddam, :cmd, :status, :st0, :st1, :st2, :pda)
+
+		def to_h
+			return {
+				data: data,
+				c: c,
+				h: h,
+				r: r,
+				n: n,
+				mfm: mfm,
+				ddam: ddam,
+				cmd: cmd,
+				status: status,
+				st0: st0,
+				st1: st1,
+				st2: st2,
+				pda: pda,
+			}
+		end
 	end
 
-	return false
+	def report_all
+		case mediatype
+		when :"1d"
+			mediatype_s = "1D"
+		when :"1dd"
+			mediatype_s = "1DD"
+		when :"2d"
+			mediatype_s = "2D"
+		when :"2dd"
+			mediatype_s = "2DD"
+		when :"2hd"
+			mediatype_s = "2HD"
+		when :unknown
+			mediatype_s = "不明なメディア"
+		else
+			mediatype_s = "メディアタイプ不正(#{mediatype})"
+		end
+		$stdout.print("  メディア種別: #{mediatype_s}\n")
+
+
+
+	end
 end
 
-def filetype_is_dim?(filedata)
-	return filedata[171, 15] == "DIFC HEADER  \0\0"
+# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html
+class DCU < DiskImage
+	HEADER_SIZE = 162
+
+	def self.image?(filedata)
+		track_map = filedata[1, 160].to_bytes
+		track_map.each do |t|
+			if t != 0 && t != 1
+				return false
+			end
+		end
+
+		media_type = filedata[0].to_byte
+		if media_type == 0x01 && filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
+			return true
+		elsif media_type == 0x02 && filedata.length == HEADER_SIZE + (512 * 15 * 2 * 80)
+			return true
+		elsif media_type == 0x03 && filedata.length == HEADER_SIZE + (512 * 18 * 2 * 80)
+			return true
+		elsif media_type == 0x04 && filedata.length == HEADER_SIZE + (512 * 8 * 2 * 80)
+			return true
+		elsif media_type == 0x05 && filedata.length == HEADER_SIZE + (512 * 9 * 2 * 80)
+			return true
+		elsif media_type == 0x08 && filedata.length == HEADER_SIZE + (1024 * 9 * 2 * 80)
+			return true
+		elsif media_type == 0x11 && filedata.length == HEADER_SIZE + (128*26 + 256*26*153)
+			return true
+		elsif media_type == 0x19 && filedata.length == HEADER_SIZE + (256 * 16 * 2 * 80)
+			return true
+		elsif media_type == 0x21 && filedata.length == HEADER_SIZE + (256 * 26 * 2 * 80)
+			return true
+		end
+
+		return false
+	end
 end
 
-def filetype_is_d88?(filedata)
-	return filedata[0x10, 10] == "\0" * 10 &&
-		[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
-		filedata.length == filedata[0x1c, 4].to_dword
+# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
+class DIM < DiskImage
+	def self.image?(filedata)
+		return filedata[171, 15] == "DIFC HEADER  \0\0"
+	end
+end
+
+# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
+class D88 < DiskImage
+	def self.image?(filedata)
+		return filedata[0x10, 10] == "\0" * 10 &&
+			[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
+			filedata.length == filedata[0x1c, 4].to_dword
+	end
+
+	def self.load(filedata)
+		r = DiskImage.new
+
+		# Media flag
+		case filedata[0x1b].to_byte
+		when 0x00 # 2D
+			r.mediatype = :"2d"
+		when 0x10 # 2DD
+			r.mediatype = :"2dd"
+		when 0x20 # 2HD
+			r.mediatype = :"2hd"
+		when 0x21 # 2HD(1.44MB NP2kai)
+			r.mediatype = :"2hd"
+		when 0x30 # 1D
+			r.mediatype = :"1d"
+		when 0x40 # 1DD
+			r.mediatype = :"1dd"
+		else
+			$stdout.print("  メディアタイプ不明: #{filedata[0x1b].to_byte.to_hex}\n")
+			r.mediatype = :unknown
+		end
+
+		# Write protect flag
+		r.writeprotect = (filedata[0x1a].to_byte == 0) ? false : true
+
+		# Disk name / comment
+		r.comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		# Track data
+		track_offsets = filedata[0x20, 4 * 164].to_dwords
+		header_size = track_offsets.find { |o| o != 0 }
+		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
+		track_offsets = track_offsets.first(header_tracks)
+
+		track_offsets.each.with_index do |track_offset, track|
+			if track_offset == 0
+				r.track[track] = nil
+			else
+				r.track[track] = Track.new
+
+				sector_offset = track_offset
+				track_nsectors = nil
+				begin
+					w = Record.new
+					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
+						filedata[sector_offset, 16].unpack("C4vC3x4Cv")
+					sector_offset += 0x10
+
+					if w.c > 90 || w.h > 1 || w.r > 20 || w.n > 6
+						$stdout.print("  トラック#{track+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
+						break  if w.n > 6 # 致命的なので後続処理中止
+					end
+
+					if nsectors > 20
+						$stdout.print("  トラック#{track+1}のセクタ数不正: #{nsectors}\n")
+					end
+
+					if !track_nsectors
+						track_nsectors = nsectors
+					elsif track_nsectors != nsectors
+						$stdout.print("  トラック#{track+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsectors}\n")
+					end
+
+					case w.mfm
+					when 0x00 # double density
+						w.mfm = true
+					when 0x40 # single density
+						w.mfm = false
+					else
+						$stdout.print("  トラック#{track+1}のDensity flag不正: #{w.mfm.to_hex}\n")
+						w.mfm = nil
+					end
+
+					case w.ddam
+					when 0x00 # normal
+						w.ddam = false
+					when 0x10 #deleted
+						w.ddam = true
+					else
+						$stdout.print("  トラック#{track+1}のDDAM flag不正: #{w.ddam.to_hex}\n")
+						w.ddam = nil
+					end
+
+					if rpm == 0 || rpm == 1
+						# OK:NOP
+					else
+						$stdout.print("  トラック#{track+1}のNP2kai RPM不正: #{rpm}\n")
+					end
+
+					nsize = 128 << w.n
+					if nsize != datasize
+						$stdout.print("  トラック#{track+1}のセクタのN値とデータサイズが異なる: N:#{nsize} != #{datasize}\n")
+					end
+
+					w.data = filedata[sector_offset, nsize]
+					sector_offset += nsize
+
+					r.track[track].record << w
+				end while r.track[track].record.length < nsectors
+
+				next_track_start = (track_offsets[(track + 1) .. -1].find { |o| o != 0 }) || filedata.length
+				if sector_offset != next_track_start
+					if sector_offset < next_track_start
+						$stdout.print("  トラック#{track+1}のデータの後に不要なデータがあります\n")
+					else
+						$stdout.print("  トラック#{track+1}のデータが次のトラックに達しています\n")
+					end
+				end
+
+			end
+		end
+
+		return r
+	end
 end
 
 def same_data_msg(from_track, to_track, value)
 	if from_track == to_track
-		$stdout.print("  トラック#{from_track}は全て#{value.ord.to_s(16)}hです\n")
+		$stdout.print("  トラック#{from_track}は全て#{value.ord.to_hex}です\n")
 	else
-		$stdout.print("  トラック#{from_track}～#{to_track}は全て#{value.ord.to_s(16)}hです\n")
+		$stdout.print("  トラック#{from_track}～#{to_track}は全て#{value.ord.to_hex}です\n")
 	end
 end
 
@@ -132,8 +348,8 @@ def fdimageid(filename)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  Virtual98形式 [.fdd]\n")
 
-	# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
-	when filetype_is_dim?(filedata)
+	# DIFC.X(.dim)
+	when DIM.image?(filedata)
 		$stdout.print("#{filename}:\n")
 
 		# DIFC.X version
@@ -165,7 +381,7 @@ def fdimageid(filename)
 			ntracks_std = 160
 			track_length = 512 * 18
 		else
-			format_flag_s = "不明(#{format_flag.to_s(16)}h)"
+			format_flag_s = "不明(#{format_flag.to_hex})"
 			ntracks_std = 0
 			track_length = 0
 		end
@@ -181,7 +397,7 @@ def fdimageid(filename)
 		xtracks = 0
 		filled_data_value = nil
 		filled_data_from = nil
-		filedata[1, 170].unpack("C*").each.with_index(1) do |flag, track|
+		filedata[1, 170].to_bytes.each.with_index(1) do |flag, track|
 			case flag
 			when 0 # なし
 				if filled_data_value
@@ -242,7 +458,7 @@ def fdimageid(filename)
 			(0 ... 26).each do |sector|
 				w = {}
 				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:byST0], w[:byST1], w[:byST2], w[:byPDA] =
-					filedata[0x10 + 0x100 + 0x10 + (track * 26 + sector) * 0x10, 11].unpack("C*")
+					filedata[0x10 + 0x100 + 0x10 + (track * 26 + sector) * 0x10, 11].unpack("C11")
 				w[:byST0] &= 0xfb # Head Address は無視
 				trackInfo[track][:sectorInfo] << w  if w[:c] != 0xff
 			end
@@ -291,7 +507,7 @@ def fdimageid(filename)
 		when 0x10
 			byPDA_s = "10h: 2DD(640KB)"
 		else
-			byPDA_s = "#{byPDA.to_s(16)}h"
+			byPDA_s = "#{byPDA.to_hex}"
 		end
 		if maxval[:byPDA] != minval[:byPDA]
 			byPDA_s += "(混在)"
@@ -320,18 +536,18 @@ def fdimageid(filename)
 		$stdout.print("  読み取り専用\n")  if flProtect != 0
 
 		trackInfo = []
-		dwTrackHead = filedata[0x10 + 0x100 + 0x10, 4 * 164].unpack("V*")
+		dwTrackHead = filedata[0x10 + 0x100 + 0x10, 4 * 164].to_dwords
 		(0 ... dwTrackHead.length).each do |track|
 			track_offset = dwTrackHead[track]
 			next  if track_offset == 0
 
-			wSector, wDiag = filedata[track_offset, 2 * 2].unpack("vv")
+			wSector, wDiag = filedata[track_offset, 2 * 2].to_words
 			trackInfo[track] = { sectorInfo:[], diagInfo:[] }
 
 			(0 ... wSector).each do |sector|
 				w = {}
 				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:bySTS0], w[:bySTS1], w[:bySTS2], w[:byRetry], w[:byPDA] =
-					filedata[track_offset + 0x10 + sector * 0x10, 12].unpack("C*")
+					filedata[track_offset + 0x10 + sector * 0x10, 12].unpack("C12")
 				w[:bySTS0] &= 0xfb # Head Address は無視
 				trackInfo[track][:sectorInfo] << w
 			end
@@ -390,8 +606,8 @@ def fdimageid(filename)
 		$stdout.print("  不安定データセクタがあります\n")  if maxval[:byRetry] != 0
 		$stdout.print("  PDAデバイスアドレスが0以外のセクタがあります\n")  if maxval[:byPDA] != 0
 
-	# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
-	when filetype_is_d88?(filedata)
+	# D88(.d88)
+	when D88.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  D88形式 [.d88 .d98 .88d .98d]\n")
 
@@ -416,7 +632,7 @@ def fdimageid(filename)
 			media_flag_s = "40h: 1DD"
 			ntracks_std = 80
 		else
-			media_flag_s = "不明(#{media_flag.to_s(16)}h)"
+			media_flag_s = "不明(#{media_flag.to_hex})"
 			ntracks_std = 0
 		end
 
@@ -426,9 +642,9 @@ def fdimageid(filename)
 		write_protect = filedata[0x1a].to_byte
 
 		$stdout.print("  コメント: #{comment.inspect}\n")  if !comment.empty?
-		$stdout.print("  書き込み禁止(#{write_protect.to_s(16)}h)\n")  if write_protect != 0
+		$stdout.print("  書き込み禁止(#{write_protect.to_hex})\n")  if write_protect != 0
 
-		track_offsets = filedata[0x20, 4 * 164].unpack("V*")
+		track_offsets = filedata[0x20, 4 * 164].to_dwords
 		header_size = track_offsets.find { |o| o != 0 }
 		header_tracks = (header_size - 0x20) / 4
 		track_offsets = track_offsets.first(header_tracks)
@@ -534,8 +750,8 @@ def fdimageid(filename)
 
 		# write_file(filename + ".xdf", trackData)
 
-	# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html
-	when filetype_is_dcu?(filedata)
+	# DCP/DCU(.dcu)
+	when DCU.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  DCP/DCU形式 [.dcu .dcp]\n")
 
@@ -560,12 +776,12 @@ def fdimageid(filename)
 		when 0x21
 			media_type_s = "21h: 2HD(26sector)"
 		else
-			media_type_s = "不明(#{media_type.to_s(16)}h)"
+			media_type_s = "不明(#{media_type.to_hex})"
 		end
 
 		$stdout.print("  メディアタイプ: #{media_type_s}\n")
 
-		track_map = filedata[1, 160].unpack("C*")
+		track_map = filedata[1, 160].to_bytes
 		all_cylinders_stored = filedata[0xa1].to_byte
 
 	# Anex86(.fdi) ヘッダ(4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
@@ -585,7 +801,7 @@ def fdimageid(filename)
 		when 0x10
 			fddtype_id_s = "10h: 2DD"
 		else
-			fddtype_id_s = "#{fddtype_id.to_s(16)}h"
+			fddtype_id_s = "#{fddtype_id.to_hex}"
 		end
 
 		headersize = filedata[0x8, 4].to_dword
@@ -668,7 +884,7 @@ end
 
 # .dim → .xdf 変換
 def strip_dim(filename)
-	if !filetype_is_dim?(filedata)
+	if !DIM.image?(filedata)
 		$stderr.print("#{ProgName}: DIFC.X形式ではありません: #{filename}\n")
 		return
 	end
@@ -725,8 +941,8 @@ def truncate_9(filename)
 		outfilename = filename + ".xdf"
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, outdata)
-	elsif filetype_is_d88?(filedata) && filedata[0x1b].to_byte == 0x10
-		track_offsets = filedata[0x20, 4 * 164].unpack("V*")
+	elsif D88.image?(filedata) && filedata[0x1b].to_byte == 0x10
+		track_offsets = filedata[0x20, 4 * 164].to_dwords
 		header_size = track_offsets.find { |o| o != 0 }
 		header_tracks = (header_size - 0x20) / 4
 		track_offsets = track_offsets.first(header_tracks)
