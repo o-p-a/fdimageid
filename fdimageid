@@ -59,19 +59,24 @@ class DiskImage
 
 	class Track
 		def initialize
-			@record = []
+			@sector = []
 		end
 
-		attr_accessor(:record)
+		attr_accessor(:sector)
 
 		def to_h
 			return {
-				record: record.map{ |r| r && r.to_h },
+				sector: sector.map{ |r| r && r.to_h },
 			}
+		end
+
+		# トラックに含まれるセクタ数
+		def nsectors
+			return sector.length
 		end
 	end
 
-	class Record
+	class Sector
 		def initialize
 			@data = nil
 			@c = nil
@@ -109,27 +114,134 @@ class DiskImage
 		end
 	end
 
-	def report_all
-		case mediatype
-		when :"1d"
-			mediatype_s = "1D"
-		when :"1dd"
-			mediatype_s = "1DD"
-		when :"2d"
-			mediatype_s = "2D"
-		when :"2dd"
-			mediatype_s = "2DD"
-		when :"2hd"
-			mediatype_s = "2HD"
-		when :unknown
-			mediatype_s = "不明なメディア"
+	# データのある最終トラック番号
+	def ntracks
+		last_empty_tracks = track.reverse.find_index { |t| !t.nil? }
+		if last_empty_tracks
+			return track.length - last_empty_tracks
 		else
-			mediatype_s = "メディアタイプ不正(#{mediatype})"
+			return 0 # データの有るトラックが無い
 		end
-		$stdout.print("  メディア種別: #{mediatype_s}\n")
+	end
 
+	# データのあるトラック数
+	def xtracks
+		return track.count { |t| !t.nil? }
+	end
 
+	def report_all
+		if comment && !comment.empty?
+			$stdout.print("  コメント: #{comment.inspect}\n")
+		end
 
+		if mediatype
+			case mediatype
+			when :"1d"
+				mediatype_s = "1D"
+				ntracks_std = 40
+			when :"1dd"
+				mediatype_s = "1DD"
+				ntracks_std = 80
+			when :"2d"
+				mediatype_s = "2D"
+				ntracks_std = 80
+			when :"2dd"
+				mediatype_s = "2DD"
+				ntracks_std = 160
+			when :"2hd"
+				mediatype_s = "2HD"
+				ntracks_std = 154
+			when :unknown
+				mediatype_s = "不明なメディア"
+				ntracks_std = 0
+			else
+				mediatype_s = "メディアタイプ不正(#{mediatype})"
+				ntracks_std = 0
+			end
+			$stdout.print("  メディア種別: #{mediatype_s}\n")
+		end
+
+		if !writeprotect.nil?
+			if writeprotect
+				$stdout.print("  書き込み禁止\n")
+			else
+				$stdout.print("  書き込み可\n")
+			end
+		end
+
+		if(ntracks == xtracks)
+			tracks_s = "#{ntracks}トラック"
+		else
+			tracks_s = "#{ntracks}(#{xtracks})トラック"
+		end
+
+		if ntracks == ntracks_std
+			tracks_s += "(標準)"
+		else
+			tracks_s += "(標準は#{ntracks_std})"
+		end
+
+		nsectors = {}
+		sector_size = {}
+		mfm_count = {}
+		ddam_count = 0
+		status_count = {}
+		track.each do |trk|
+			next  if !trk
+
+			nsec = trk.nsectors
+			nsectors[nsec] ||= 0
+			nsectors[nsec] += 1
+
+			trk.sector.each do |sec|
+				ssize = sec.data.length
+				sector_size[ssize] ||= 0
+				sector_size[ssize] += 1
+
+				if !sec.mfm.nil?
+					mfm_count[sec.mfm] ||= 0
+					mfm_count[sec.mfm] += 1
+				end
+
+				if sec.ddam == true
+					ddam_count += 1
+				end
+
+				if !sec.status.nil? && sec.status != 0
+					status_count[sec.status] ||= 0
+					status_count[sec.status] += 1
+				end
+			end
+		end
+
+		sector_size = sector_size.to_a.sort_by{ |e| e[1] }.reverse
+		sector_size_s = "#{sector_size[0][0]}バイト"
+		if sector_size.length >= 2
+			sector_size_s += "(混在あり)"
+		end
+
+		nsectors = nsectors.to_a.sort_by{ |e| e[1] }.reverse
+		nsectors_s = "#{nsectors[0][0]}セクタ"
+		if nsectors.length >= 2
+			nsectors_s += "(混在あり)"
+		end
+
+		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{tracks_s}\n")
+
+		if mfm_count.length >= 2
+			$stdout.print("  FM/MFM混在: FM:#{mfm_count[false]}セクタ MFM:#{mfm_count[true]}セクタ\n")
+		end
+
+		if ddam_count > 0
+			$stdout.print("  Deleted Data Address Markの立ったセクタが#{ddam_count}個あります\n")
+		end
+
+		status_count = status_count.to_a.sort_by{ |e| e[1] }.reverse
+		if status_count.length > 0
+			status_count_s = "#{status_count[0][0].to_hex}が#{status_count[0][1]}個"
+			status_count_s += " 他"  if status_count.length >= 2
+			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_count_s})\n")
+		end
 	end
 end
 
@@ -228,17 +340,17 @@ class D88 < DiskImage
 				sector_offset = track_offset
 				track_nsectors = nil
 				begin
-					w = Record.new
+					w = Sector.new
 					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
 						filedata[sector_offset, 16].unpack("C4vC3x4Cv")
 					sector_offset += 0x10
 
-					if w.c > 90 || w.h > 1 || w.r > 20 || w.n > 6
+					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
 						$stdout.print("  トラック#{track+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
 						break  if w.n > 6 # 致命的なので後続処理中止
 					end
 
-					if nsectors > 20
+					if nsectors > 32
 						$stdout.print("  トラック#{track+1}のセクタ数不正: #{nsectors}\n")
 					end
 
@@ -282,8 +394,8 @@ class D88 < DiskImage
 					w.data = filedata[sector_offset, nsize]
 					sector_offset += nsize
 
-					r.track[track].record << w
-				end while r.track[track].record.length < nsectors
+					r.track[track].sector << w
+				end while r.track[track].sector.length < nsectors
 
 				next_track_start = (track_offsets[(track + 1) .. -1].find { |o| o != 0 }) || filedata.length
 				if sector_offset != next_track_start
@@ -293,7 +405,6 @@ class D88 < DiskImage
 						$stdout.print("  トラック#{track+1}のデータが次のトラックに達しています\n")
 					end
 				end
-
 			end
 		end
 
@@ -611,144 +722,9 @@ def fdimageid(filename)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  D88形式 [.d88 .d98 .88d .98d]\n")
 
-		media_flag = filedata[0x1b].to_byte
-		case media_flag
-		when 0x00
-			media_flag_s = "00h: 2D"
-			ntracks_std = 80
-		when 0x10
-			media_flag_s = "10h: 2DD"
-			ntracks_std = 160
-		when 0x20
-			media_flag_s = "20h: 2HD"
-			ntracks_std = 154
-		when 0x21
-			media_flag_s = "21h: 2HD(1.44MB NP2kai)"
-			ntracks_std = 160
-		when 0x30
-			media_flag_s = "30h: 1D"
-			ntracks_std = 40
-		when 0x40
-			media_flag_s = "40h: 1DD"
-			ntracks_std = 80
-		else
-			media_flag_s = "不明(#{media_flag.to_hex})"
-			ntracks_std = 0
-		end
+		image = D88.load(filedata)
+		image.report_all
 
-		$stdout.print("  メディア種別: #{media_flag_s}\n")
-
-		comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-		write_protect = filedata[0x1a].to_byte
-
-		$stdout.print("  コメント: #{comment.inspect}\n")  if !comment.empty?
-		$stdout.print("  書き込み禁止(#{write_protect.to_hex})\n")  if write_protect != 0
-
-		track_offsets = filedata[0x20, 4 * 164].to_dwords
-		header_size = track_offsets.find { |o| o != 0 }
-		header_tracks = (header_size - 0x20) / 4
-		track_offsets = track_offsets.first(header_tracks)
-
-		ntracks = track_offsets.length - track_offsets.reverse.find_index { |to| to != 0 } # 最終トラック番号
-		track_offsets = track_offsets.first(ntracks) # 先頭nトラックで切り詰め
-		xtracks = track_offsets.count { |to| to != 0 } # データの有るトラック数
-		if(ntracks == xtracks)
-			ntracks_s = "#{ntracks}トラック"
-		else
-			ntracks_s = "#{ntracks}(#{xtracks})トラック"
-		end
-
-		if ntracks == ntracks_std
-			ntracks_s += "(標準)"
-		else
-			ntracks_s += "(標準は#{ntracks_std})"
-		end
-
-		trackInfo = []
-		trackData = ""
-		track_offsets.each.with_index do |track_offset, track|
-			next  if track_offset == 0
-
-			trackInfo[track] = { sectorInfo:[] }
-			sector_offset = track_offset
-			while true
-				w = {}
-				w[:c], w[:h], w[:r], w[:n], w[:nsectors], w[:density], w[:ddam], w[:status], w[:rpm], w[:datasize] =
-					filedata[sector_offset, 16].unpack("C4vC3x4Cv")
-				sector_offset += 0x10
-
-				if w[:c] > 90 || w[:h] > 1 || w[:r] > 20 || w[:n] > 6
-					$stdout.print("  トラック#{track+1}のCHRN不正: #{w[:c]} #{w[:h]} #{w[:r]} #{w[:n]}\n")
-					break
-				end
-
-				trackInfo[track][:sectorInfo] << w
-
-				nsize = 128 << w[:n]
-				if nsize != w[:datasize]
-					$stdout.print("  セクタのN値とデータサイズが異なります: N:#{nsize} != #{w[:datasize]}\n")
-				end
-				trackData += filedata[sector_offset, nsize]
-				sector_offset += nsize
-
-				if trackInfo[track][:sectorInfo].length >= w[:nsectors]
-					next_track_start = (track_offsets[(track + 1) .. -1].find { |o| o != 0 }) || filesize
-					if sector_offset != next_track_start
-						if sector_offset < next_track_start
-							$stdout.print("  トラック#{track+1}のデータの後に不要なデータがあります\n")
-						else
-							$stdout.print("  トラック#{track+1}のデータが次のトラックに達しています\n")
-						end
-					end
-					break
-				end
-			end
-		end
-
-		minval = {}
-		maxval = {}
-		minnsec = nil
-		maxnsec = nil
-		trackInfo.each do |ti|
-			next  if !ti
-
-			ti[:sectorInfo].each do |si|
-				[:c, :h, :r, :n, :nsectors, :density, :ddam, :status, :rpm].each do |member|
-					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
-					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
-				end
-			end
-			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
-			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
-		end
-
-		sector_size = 128 << maxval[:n]
-		if maxval[:n] == minval[:n]
-			sector_size_s = "#{sector_size}バイト"
-		else
-			sector_size_s = "#{sector_size}バイト(混在あり)"
-		end
-
-		nsectors = maxnsec
-		if maxnsec == minnsec
-			nsectors_s = "#{nsectors}セクタ"
-		else
-			nsectors_s = "#{nsectors}セクタ(混在あり)"
-		end
-
-		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
-		$stdout.print("  FM/MFM混在\n")  if maxval[:density] != minval[:density]
-		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:ddam] != 0
-		$stdout.print("  FDC Statusが0以外のセクタがあります\n")  if maxval[:status] != 0
-		if maxval[:rpm] != 0
-			if maxval[:rpm] == minval[:rpm]
-				$stdout.print("  NP2kai RPM Flagがセットされています\n")
-			else
-				$stdout.print("  NP2kai RPM Flagがセットされています(混在)\n")
-			end
-		end
-
-		# write_file(filename + ".xdf", trackData)
 
 	# DCP/DCU(.dcu)
 	when DCU.image?(filedata)
