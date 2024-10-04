@@ -39,45 +39,67 @@ def write_file(filename, data)
 end
 
 class DiskImage
-	def initialize
+	attr_accessor(:mediatype, :track, :writeprotect, :comment)
+
+	def initialize(filename:nil, data:nil)
+		clear
+
+		if filename
+			data = read_file(filename)
+		end
+
+		if data
+			load(data)
+		end
+	end
+
+	def clear
 		@mediatype = nil # :"1d", :"1dd", :"2d", :"2dd", :"2hd", :unknown
 		@track = []
 		@writeprotect = nil # true:Write Protected false:Writeable
 		@comment = nil
 	end
 
-	attr_accessor(:mediatype, :track, :writeprotect, :comment)
-
 	def to_h
 		return {
-			mediatype: mediatype,
-			track: track.map{ |t| t && t.to_h },
-			writeprotect: writeprotect,
-			comment: comment,
+			mediatype: @mediatype,
+			track: @track.map{ |t| t && t.to_h },
+			writeprotect: @writeprotect,
+			comment: @comment,
 		}
 	end
 
 	class Track
+		attr_accessor(:sector)
+
 		def initialize
+			clear
+		end
+
+		def clear
 			@sector = []
 		end
 
-		attr_accessor(:sector)
-
 		def to_h
 			return {
-				sector: sector.map{ |r| r && r.to_h },
+				sector: @sector.map{ |r| r && r.to_h },
 			}
 		end
 
 		# トラックに含まれるセクタ数
 		def nsectors
-			return sector.length
+			return @sector.length
 		end
 	end
 
 	class Sector
+		attr_accessor(:data, :c, :h, :r, :n, :mfm, :ddam, :cmd, :status, :st0, :st1, :st2, :pda)
+
 		def initialize
+			clear
+		end
+
+		def clear
 			@data = nil
 			@c = nil
 			@h = nil
@@ -93,32 +115,30 @@ class DiskImage
 			@pda = nil		# PDA 0x90:1.2M 0x30:1.44M 0x10:640K
 		end
 
-		attr_accessor(:data, :c, :h, :r, :n, :mfm, :ddam, :cmd, :status, :st0, :st1, :st2, :pda)
-
 		def to_h
 			return {
-				data: data,
-				c: c,
-				h: h,
-				r: r,
-				n: n,
-				mfm: mfm,
-				ddam: ddam,
-				cmd: cmd,
-				status: status,
-				st0: st0,
-				st1: st1,
-				st2: st2,
-				pda: pda,
+				data: @data,
+				c: @c,
+				h: @h,
+				r: @r,
+				n: @n,
+				mfm: @mfm,
+				ddam: @ddam,
+				cmd: @cmd,
+				status: @status,
+				st0: @st0,
+				st1: @st1,
+				st2: @st2,
+				pda: @pda,
 			}
 		end
 	end
 
 	# データのある最終トラック番号
 	def ntracks
-		last_empty_tracks = track.reverse.find_index { |t| !t.nil? }
-		if last_empty_tracks
-			return track.length - last_empty_tracks
+		last_empty_track_count = @track.reverse.find_index { |t| !t.nil? }
+		if last_empty_track_count
+			return @track.length - last_empty_track_count
 		else
 			return 0 # データの有るトラックが無い
 		end
@@ -126,16 +146,21 @@ class DiskImage
 
 	# データのあるトラック数
 	def xtracks
-		return track.count { |t| !t.nil? }
+		return @track.count { |t| !t.nil? }
+	end
+
+	# 全データをCHRN順に連結したもの
+	def whole_data
 	end
 
 	def report_all
-		if comment && !comment.empty?
-			$stdout.print("  コメント: #{comment.inspect}\n")
+		if @comment && !@comment.empty?
+			$stdout.print("  コメント: #{@comment.inspect}\n")
 		end
 
-		if mediatype
-			case mediatype
+		ntracks_std = 0
+		if @mediatype
+			case @mediatype
 			when :"1d"
 				mediatype_s = "1D"
 				ntracks_std = 40
@@ -144,41 +169,27 @@ class DiskImage
 				ntracks_std = 80
 			when :"2d"
 				mediatype_s = "2D"
-				ntracks_std = 80
+				ntracks_std = 40 * 2
 			when :"2dd"
 				mediatype_s = "2DD"
-				ntracks_std = 160
+				ntracks_std = 80 * 2
 			when :"2hd"
 				mediatype_s = "2HD"
-				ntracks_std = 154
+				ntracks_std = 80 * 2 # or 77 * 2
 			when :unknown
 				mediatype_s = "不明なメディア"
-				ntracks_std = 0
 			else
-				mediatype_s = "メディアタイプ不正(#{mediatype})"
-				ntracks_std = 0
+				mediatype_s = "メディアタイプ不正(#{@mediatype})"
 			end
 			$stdout.print("  メディア種別: #{mediatype_s}\n")
 		end
 
-		if !writeprotect.nil?
-			if writeprotect
+		if !@writeprotect.nil?
+			if @writeprotect
 				$stdout.print("  書き込み禁止\n")
 			else
 				$stdout.print("  書き込み可\n")
 			end
-		end
-
-		if(ntracks == xtracks)
-			tracks_s = "#{ntracks}トラック"
-		else
-			tracks_s = "#{ntracks}(#{xtracks})トラック"
-		end
-
-		if ntracks == ntracks_std
-			tracks_s += "(標準)"
-		else
-			tracks_s += "(標準は#{ntracks_std})"
 		end
 
 		nsectors = {}
@@ -186,7 +197,7 @@ class DiskImage
 		mfm_count = {}
 		ddam_count = 0
 		status_count = {}
-		track.each do |trk|
+		@track.each do |trk|
 			next  if !trk
 
 			nsec = trk.nsectors
@@ -215,15 +226,43 @@ class DiskImage
 		end
 
 		sector_size = sector_size.to_a.sort_by{ |e| e[1] }.reverse
-		sector_size_s = "#{sector_size[0][0]}バイト"
-		if sector_size.length >= 2
-			sector_size_s += "(混在あり)"
+		if !sector_size.empty?
+			sector_size_s = "#{sector_size[0][0]}バイト"
+			if sector_size.length >= 2
+				sector_size_s += "(混在あり)"
+			end
+		else
+			sector_size_s = "0バイト"
 		end
 
 		nsectors = nsectors.to_a.sort_by{ |e| e[1] }.reverse
-		nsectors_s = "#{nsectors[0][0]}セクタ"
-		if nsectors.length >= 2
-			nsectors_s += "(混在あり)"
+		if !nsectors.empty?
+			nsectors_s = "#{nsectors[0][0]}セクタ"
+			if nsectors.length >= 2
+				nsectors_s += "(混在あり)"
+			end
+		else
+			nsectors_s = "0セクタ"
+		end
+
+		if @mediatype == :"2hd" && !sector_size.empty? && !nsectors.empty?
+			if (sector_size[0][0] == 1024 && nsectors[0][0] == 8) ||
+				(sector_size.length >= 2 && sector_size[0][0] == 256 && sector_size[1][0] == 128 && nsectors[0][0] == 26)
+
+				ntracks_std = 77 * 2
+			end
+		end
+
+		if(ntracks == xtracks)
+			tracks_s = "#{ntracks}トラック"
+		else
+			tracks_s = "#{ntracks}(#{xtracks})トラック"
+		end
+
+		if ntracks == ntracks_std
+			tracks_s += "(標準)"
+		else
+			tracks_s += "(標準は#{ntracks_std})"
 		end
 
 		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{tracks_s}\n")
@@ -237,11 +276,192 @@ class DiskImage
 		end
 
 		status_count = status_count.to_a.sort_by{ |e| e[1] }.reverse
-		if status_count.length > 0
+		if !status_count.empty?
 			status_count_s = "#{status_count[0][0].to_hex}が#{status_count[0][1]}個"
 			status_count_s += " 他"  if status_count.length >= 2
 			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_count_s})\n")
 		end
+	end
+end
+
+# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
+class V98FDD < DiskImage
+	def self.image?(filedata)
+		return filedata[0, 7] == "VFD1.00"
+	end
+
+	def load(filedata)
+		clear
+	end
+
+	def dump
+	end
+end
+
+# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
+class DIM < DiskImage
+	def self.image?(filedata)
+		return filedata[171, 15] == "DIFC HEADER  \0\0"
+	end
+
+	def load(filedata)
+		clear
+	end
+
+	def dump
+	end
+end
+
+# T98Next R0(.nfd) ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
+class NFD_R0 < DiskImage
+	def self.image?(filedata)
+		return filedata[0, 15] == "T98FDDIMAGE.R0\0"
+	end
+
+	def load(filedata)
+		clear
+	end
+
+	def dump
+	end
+end
+
+# T98Next R1(.nfd) ヘッダ(全体+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
+class NFD_R1 < DiskImage
+	def self.image?(filedata)
+		return filedata[0, 15] == "T98FDDIMAGE.R1\0"
+	end
+
+	def load(filedata)
+		clear
+	end
+
+	def dump
+	end
+end
+
+# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
+class D88 < DiskImage
+	def self.image?(filedata)
+		return filedata[0x10, 10] == "\0" * 10 &&
+			[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
+			filedata.length == filedata[0x1c, 4].to_dword
+	end
+
+	def load(filedata)
+		clear
+
+		# Media flag
+		case filedata[0x1b].to_byte
+		when 0x00 # 2D
+			@mediatype = :"2d"
+		when 0x10 # 2DD
+			@mediatype = :"2dd"
+		when 0x20 # 2HD
+			@mediatype = :"2hd"
+		when 0x21 # 2HD(1.44MB NP2kai)
+			@mediatype = :"2hd"
+		when 0x30 # 1D
+			@mediatype = :"1d"
+		when 0x40 # 1DD
+			@mediatype = :"1dd"
+		else
+			$stdout.print("  メディアタイプ不明: #{filedata[0x1b].to_byte.to_hex}\n")
+			@mediatype = :unknown
+		end
+
+		# Write protect flag
+		@writeprotect = (filedata[0x1a].to_byte == 0) ? false : true
+
+		# Disk name / comment
+		@comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		# Track data
+		track_offsets = filedata[0x20, 4 * 164].to_dwords
+		header_size = track_offsets.find { |o| o != 0 }
+		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
+		track_offsets = track_offsets.first(header_tracks)
+
+		track_offsets.each.with_index do |track_offset, trkno|
+			if track_offset == 0
+				@track[trkno] = nil
+			else
+				trk = Track.new
+				@track[trkno] = trk
+
+				sector_offset = track_offset
+				track_nsectors = nil
+				begin
+					w = Sector.new
+					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
+						filedata[sector_offset, 16].unpack("C4vC3x4Cv")
+					sector_offset += 0x10
+
+					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
+						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
+						break  if w.n > 6 # 致命的なので後続処理中止
+					end
+
+					if nsectors > 32
+						$stdout.print("  トラック#{trkno+1}のセクタ数不正: #{nsectors}\n")
+					end
+
+					if !track_nsectors
+						track_nsectors = nsectors
+					elsif track_nsectors != nsectors
+						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsectors}\n")
+					end
+
+					case w.mfm
+					when 0x00 # double density
+						w.mfm = true
+					when 0x40 # single density
+						w.mfm = false
+					else
+						$stdout.print("  トラック#{trkno+1}のDensity flag不正: #{w.mfm.to_hex}\n")
+						w.mfm = nil
+					end
+
+					case w.ddam
+					when 0x00 # normal
+						w.ddam = false
+					when 0x10 #deleted
+						w.ddam = true
+					else
+						$stdout.print("  トラック#{trkno+1}のDDAM flag不正: #{w.ddam.to_hex}\n")
+						w.ddam = nil
+					end
+
+					if rpm == 0 || rpm == 1
+						# OK:NOP
+					else
+						$stdout.print("  トラック#{trkno+1}のNP2kai RPM不正: #{rpm}\n")
+					end
+
+					nsize = 128 << w.n
+					if nsize != datasize
+						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{nsize} != #{datasize}\n")
+					end
+
+					w.data = filedata[sector_offset, nsize]
+					sector_offset += nsize
+
+					trk.sector << w
+				end while trk.sector.length < nsectors
+
+				next_track_start = (track_offsets[(trkno + 1) .. -1].find { |o| o != 0 }) || filedata.length
+				if sector_offset != next_track_start
+					if sector_offset < next_track_start
+						$stdout.print("  トラック#{trkno+1}のデータの後に不要なデータがあります\n")
+					else
+						$stdout.print("  トラック#{trkno+1}のデータが次のトラックに達しています\n")
+					end
+				end
+			end
+		end
+	end
+
+	def dump
 	end
 end
 
@@ -258,157 +478,134 @@ class DCU < DiskImage
 		end
 
 		media_type = filedata[0].to_byte
-		if media_type == 0x01 && filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
+		if media_type == 0x01 && filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77) # 2HD(1.25MB 2HS)
 			return true
-		elsif media_type == 0x02 && filedata.length == HEADER_SIZE + (512 * 15 * 2 * 80)
+		elsif media_type == 0x02 && filedata.length == HEADER_SIZE + (512 * 15 * 2 * 80) # 2HD(1.21MB 2HC)
 			return true
-		elsif media_type == 0x03 && filedata.length == HEADER_SIZE + (512 * 18 * 2 * 80)
+		elsif media_type == 0x03 && filedata.length == HEADER_SIZE + (512 * 18 * 2 * 80) # 2HQ(1.44MB 2HDE)
 			return true
-		elsif media_type == 0x04 && filedata.length == HEADER_SIZE + (512 * 8 * 2 * 80)
+		elsif media_type == 0x04 && filedata.length == HEADER_SIZE + (512 * 8 * 2 * 80) # 2DD(640KB)
 			return true
-		elsif media_type == 0x05 && filedata.length == HEADER_SIZE + (512 * 9 * 2 * 80)
+		elsif media_type == 0x05 && filedata.length == HEADER_SIZE + (512 * 9 * 2 * 80) # 2DD(720KB)
 			return true
-		elsif media_type == 0x08 && filedata.length == HEADER_SIZE + (1024 * 9 * 2 * 80)
+		elsif media_type == 0x08 && filedata.length == HEADER_SIZE + (1024 * 9 * 2 * 80) # 2HD(1.44MB)
 			return true
-		elsif media_type == 0x11 && filedata.length == HEADER_SIZE + (128*26 + 256*26*153)
+		elsif media_type == 0x11 && filedata.length == HEADER_SIZE + (128*26 + 256*26*153) # 2HD(Disk BASIC)
 			return true
-		elsif media_type == 0x19 && filedata.length == HEADER_SIZE + (256 * 16 * 2 * 80)
+		elsif media_type == 0x19 && filedata.length == HEADER_SIZE + (256 * 16 * 2 * 80) # 2DD(Disk BASIC)
 			return true
-		elsif media_type == 0x21 && filedata.length == HEADER_SIZE + (256 * 26 * 2 * 80)
+		elsif media_type == 0x21 && filedata.length == HEADER_SIZE + (256 * 26 * 2 * 80) # 2HD(26sector)
 			return true
 		end
 
 		return false
 	end
-end
 
-# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
-class DIM < DiskImage
-	def self.image?(filedata)
-		return filedata[171, 15] == "DIFC HEADER  \0\0"
+	def load(filedata)
+		clear
+	end
+
+	def dump
 	end
 end
 
-# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
-class D88 < DiskImage
+# Anex86(.fdi) ヘッダ(4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
+class FDI < DiskImage
 	def self.image?(filedata)
-		return filedata[0x10, 10] == "\0" * 10 &&
-			[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
-			filedata.length == filedata[0x1c, 4].to_dword
+		return filedata[0, 4].to_dword == 0 &&
+			[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
+			filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filedata.length
 	end
 
-	def self.load(filedata)
-		r = DiskImage.new
+	def load(filedata)
+		clear
+	end
 
-		# Media flag
-		case filedata[0x1b].to_byte
-		when 0x00 # 2D
-			r.mediatype = :"2d"
-		when 0x10 # 2DD
-			r.mediatype = :"2dd"
-		when 0x20 # 2HD
-			r.mediatype = :"2hd"
-		when 0x21 # 2HD(1.44MB NP2kai)
-			r.mediatype = :"2hd"
-		when 0x30 # 1D
-			r.mediatype = :"1d"
-		when 0x40 # 1DD
-			r.mediatype = :"1dd"
-		else
-			$stdout.print("  メディアタイプ不明: #{filedata[0x1b].to_byte.to_hex}\n")
-			r.mediatype = :unknown
-		end
+	def dump
+	end
+end
 
-		# Write protect flag
-		r.writeprotect = (filedata[0x1a].to_byte == 0) ? false : true
+# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
+class DIP < DiskImage
+	def self.image?(filedata)
+		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
+			filedata.length == 256 + (1024 * 8 * 2 * 77)
+	end
 
-		# Disk name / comment
-		r.comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+	def load(filedata)
+		clear
+	end
 
-		# Track data
-		track_offsets = filedata[0x20, 4 * 164].to_dwords
-		header_size = track_offsets.find { |o| o != 0 }
-		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
-		track_offsets = track_offsets.first(header_tracks)
+	def dump
+	end
+end
 
-		track_offsets.each.with_index do |track_offset, track|
-			if track_offset == 0
-				r.track[track] = nil
-			else
-				r.track[track] = Track.new
+# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+class SLF < DiskImage
+	def self.image?(filedata)
+		return filedata[0, 4] == "FDIM" &&
+			filedata[4, 4].to_dword == 0x10000 &&
+			filedata[8, 4].to_dword == filedata.length
+	end
 
-				sector_offset = track_offset
-				track_nsectors = nil
-				begin
+	def load(filedata)
+		clear
+	end
+
+	def dump
+	end
+end
+
+# XDF(.xdf) べたデータ
+class XDF < DiskImage
+	Geometries = [
+		#   siz    media  cyls heads  nsec ssize  ssize  nsec  head   cyl
+		[1474560, :"2hd",   80,    2,   18,  512],	# 1.44MB 2HD
+		[1474560, :"2hd",   80,    2,    9, 1024],	# 1.44MB 2HD
+		[1261568, :"2hd",   77,    2,    8, 1024],	# 1.23MB 2HD
+		[1228800, :"2hd",   80,    2,   15,  512],	# 1.2MB 2HD
+		[1064960, :"2hd",   80,    2,   26,  256],	# 1.04MB 2HD
+		[1021696, :"2hd",   77,    2,   26,  256],	# DISK BASIC 2HD
+		[ 819200, :"2dd",   80,    2,   10,  512],	# 800KB 2DD
+		[ 737280, :"2dd",   80,    2,    9,  512],	# 720KB 2DD
+		[ 655360, :"2dd",   80,    2,    8,  512],	# 640KB 2DD
+		[ 655360, :"2dd",   80,    2,   16,  256],	# DISK BASIC 2DD
+		[ 327680, :"2d",    40,    2,    8,  512],	# 320KB 2D
+		[ 327680, :"1dd",   80,    1,    8,  512],	# 320KB 1DD
+		[ 163840, :"1d",    40,    1,    8,  512],	# 160KB 1D
+	]
+
+	def self.image?(filedata)
+		return Geometries.find{ |g| g[0] == filedata.length } ? true : false
+	end
+
+	def load(filedata)
+		clear
+
+		geom = Geometries.find{ |g| g[0] == filedata.length }
+		@mediatype, cyls, heads, nsecs, ssize = geom[1 .. 5]
+
+		offset = 0
+		(1 .. cyls).each do |cyl|
+			(1 .. heads).each do |head|
+				trkno = (cyl - 1) * heads + (head - 1)
+				trk = Track.new
+				@track[trkno] = trk
+				(1 .. nsecs).each do |sec|
 					w = Sector.new
-					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
-						filedata[sector_offset, 16].unpack("C4vC3x4Cv")
-					sector_offset += 0x10
-
-					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
-						$stdout.print("  トラック#{track+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
-						break  if w.n > 6 # 致命的なので後続処理中止
-					end
-
-					if nsectors > 32
-						$stdout.print("  トラック#{track+1}のセクタ数不正: #{nsectors}\n")
-					end
-
-					if !track_nsectors
-						track_nsectors = nsectors
-					elsif track_nsectors != nsectors
-						$stdout.print("  トラック#{track+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsectors}\n")
-					end
-
-					case w.mfm
-					when 0x00 # double density
-						w.mfm = true
-					when 0x40 # single density
-						w.mfm = false
-					else
-						$stdout.print("  トラック#{track+1}のDensity flag不正: #{w.mfm.to_hex}\n")
-						w.mfm = nil
-					end
-
-					case w.ddam
-					when 0x00 # normal
-						w.ddam = false
-					when 0x10 #deleted
-						w.ddam = true
-					else
-						$stdout.print("  トラック#{track+1}のDDAM flag不正: #{w.ddam.to_hex}\n")
-						w.ddam = nil
-					end
-
-					if rpm == 0 || rpm == 1
-						# OK:NOP
-					else
-						$stdout.print("  トラック#{track+1}のNP2kai RPM不正: #{rpm}\n")
-					end
-
-					nsize = 128 << w.n
-					if nsize != datasize
-						$stdout.print("  トラック#{track+1}のセクタのN値とデータサイズが異なる: N:#{nsize} != #{datasize}\n")
-					end
-
-					w.data = filedata[sector_offset, nsize]
-					sector_offset += nsize
-
-					r.track[track].sector << w
-				end while r.track[track].sector.length < nsectors
-
-				next_track_start = (track_offsets[(track + 1) .. -1].find { |o| o != 0 }) || filedata.length
-				if sector_offset != next_track_start
-					if sector_offset < next_track_start
-						$stdout.print("  トラック#{track+1}のデータの後に不要なデータがあります\n")
-					else
-						$stdout.print("  トラック#{track+1}のデータが次のトラックに達しています\n")
-					end
+					w.c = cyl - 1 # シリンダは0オリジン
+					w.h = head - 1 # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize]
+					offset += ssize
+					trk.sector << w
 				end
 			end
 		end
+	end
 
-		return r
+	def dump
 	end
 end
 
@@ -450,12 +647,12 @@ def track_report(filedata, sector_byte = 1024, nsectors = 8, ntracks = 2 * 77)
 end
 
 def fdimageid(filename)
-	filedata = read_file(filename)
+	filedata = read_file(filename).freeze
 	filesize = filedata.length
 
 	case
-	# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
-	when filedata[0, 7] == "VFD1.00"
+	# Virtual98(.fdd)
+	when V98FDD.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  Virtual98形式 [.fdd]\n")
 
@@ -550,8 +747,8 @@ def fdimageid(filename)
 			$stdout.print("  ファイルサイズが不正(#{filesize}バイト)\n")
 		end
 
-	# T98Next R0(.nfd) ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
-	when filedata[0, 15] == "T98FDDIMAGE.R0\0"
+	# T98Next R0(.nfd)
+	when NFD_R0.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  T98-Next NFD r0形式 [.nfd]\n")
 
@@ -633,8 +830,8 @@ def fdimageid(filename)
 		$stdout.print("  FDC Store Status 2が0以外のセクタがあります\n")  if maxval[:byST2] != 0
 		$stdout.print("  PDAデバイスアドレス: #{byPDA_s}\n")
 
-	# T98Next R1(.nfd) ヘッダ(全体+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
-	when filedata[0, 15] == "T98FDDIMAGE.R1\0"
+	# T98Next R1(.nfd)
+	when NFD_R1.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  T98-Next NFD r1形式 [.nfd]\n")
 
@@ -722,9 +919,8 @@ def fdimageid(filename)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  D88形式 [.d88 .d98 .88d .98d]\n")
 
-		image = D88.load(filedata)
+		image = D88.new(data:filedata)
 		image.report_all
-
 
 	# DCP/DCU(.dcu)
 	when DCU.image?(filedata)
@@ -734,9 +930,9 @@ def fdimageid(filename)
 		media_type = filedata[0].to_byte
 		case media_type
 		when 0x01
-			media_type_s = "01h: 2HD(1.23MB)"
+			media_type_s = "01h: 2HD(1.25MB 2HS)"
 		when 0x02
-			media_type_s = "02h: 2HD(1.2MB 2HC)"
+			media_type_s = "02h: 2HD(1.21MB 2HC)"
 		when 0x03
 			media_type_s = "03h: 2HQ(1.44MB 2HDE)"
 		when 0x04
@@ -760,11 +956,8 @@ def fdimageid(filename)
 		track_map = filedata[1, 160].to_bytes
 		all_cylinders_stored = filedata[0xa1].to_byte
 
-	# Anex86(.fdi) ヘッダ(4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
-	when filedata[0, 4].to_dword == 0 &&
-		[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
-		filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filesize
-
+	# Anex86(.fdi)
+	when FDI.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  Anex86形式 [.fdi]\n")
 
@@ -802,56 +995,41 @@ def fdimageid(filename)
 		$stdout.print("  ヘッダサイズ: #{headersize}バイト\n")
 		$stdout.print("  データサイズ: #{datasize}バイト#{datasize_s}\n")
 
-	# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
-	when filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
-		filesize == 256 + 1261568
-
+	# DIP(.dip)
+	when DIP.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  DIP形式 [.dip]\n")
 
-	# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
-	when filedata[0, 4] == "FDIM" &&
-		filedata[4, 4].to_dword == 0x10000 &&
-		filedata[8, 4].to_dword == filesize
-
+	# SL9821(.slf)
+	when SLF.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  SL9821形式 [.slf]\n")
 
-	# 1.44MB 2HD べた (512バイト×18セクタ×2ヘッド×80シリンダ = 1474560バイト)
-	when filesize == 512 * 18 * 2 * 80
-		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
+	# XDF(.xdf)
+	when XDF.image?(filedata)
+		$stdout.print("#{filename}:\n")
 
-		track_report(filedata, 512, 18, 2 * 80)
+		case filesize
+		when 512 * 18 * 2 * 80 # 1.44MB 2HD
+			$stdout.print("  べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
+		when 1024 * 8 * 2 * 77 # 1.23MB 2HD
+			$stdout.print("  べたイメージ 2HD(1.23MB PC98) [.xdf .2hd .dup .hdm .tfd]\n")
+		when 512 * 15 * 2 * 80 # 1.2MB 2HD
+			$stdout.print("  べたイメージ 2HD(1.2MB PC/AT) [.2hd]\n")
+		when 512 * 9 * 2 * 80 # 720KB 2DD
+			$stdout.print("  べたイメージ 2DD(720KB MSX) [.dsk]\n")
+		when 512 * 8 * 2 * 80 # 640KB 2DD
+			$stdout.print("  べたイメージ 2DD(640KB) [.2dd]\n")
+		when 512 * 8 * 2 * 40 # 320KB 2D
+			$stdout.print("  べたイメージ 2D(320KB) [.2d]\n")
+		when 512 * 8 * 1 * 40 # 160KB 1D
+			$stdout.print("  べたイメージ 1D(160KB) [.1d]\n")
+		else
+			$stdout.print("  べたイメージ [.xdf]\n")
+		end
 
-	# 1.23MB 2HD べた (1024バイト×8セクタ×2ヘッド×77シリンダ = 1261568バイト)
-	when filesize == 1024 * 8 * 2 * 77
-		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.23MB PC98) [.xdf .2hd .dup .hdm .tfd]\n")
-
-		track_report(filedata, 1024, 8, 2 * 77)
-
-	# 1.2MB 2HD べた (512バイト×15セクタ×2ヘッド×80シリンダ = 1228800バイト)
-	when filesize == 512 * 15 * 2 * 80
-		$stdout.print("#{filename}:\n  べたイメージ 2HD(1.2MB PC/AT) [.2hd]\n")
-
-		track_report(filedata, 512, 15, 2 * 80)
-
-	# 720KB 2DD べた (512バイト×9セクタ×2ヘッド×80シリンダ = 737280バイト)
-	when filesize == 512 * 9 * 2 * 80
-		$stdout.print("#{filename}:\n  べたイメージ 2DD(720KB MSX) [.dsk]\n")
-
-		track_report(filedata, 512, 9, 2 * 80)
-
-	# 640KB 2DD べた (512バイト×8セクタ×2ヘッド×80シリンダ = 655360バイト)
-	when filesize == 512 * 8 * 2 * 80
-		$stdout.print("#{filename}:\n  べたイメージ 2DD(640KB) [.2dd]\n")
-
-		track_report(filedata, 512, 8, 2 * 80)
-
-	# 320KB 2D べた (512バイト×8セクタ×2ヘッド×40シリンダ = 327680バイト)
-	when filesize == 512 * 8 * 2 * 40
-		$stdout.print("#{filename}:\n  べたイメージ 2D(320KB) [.2d]\n")
-
-		track_report(filedata, 512, 8, 2 * 40)
+		image = XDF.new(data:filedata)
+		image.report_all
 
 	else
 		$stdout.print("#{filename}:\n  不明な形式 (#{filesize}バイト)\n")
