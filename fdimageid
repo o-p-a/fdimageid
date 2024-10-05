@@ -800,13 +800,38 @@ end
 
 # DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
 class DIP < DiskImage
+	HEADER_SIZE = 256
+
 	def self.image?(filedata)
 		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
-			filedata.length == 256 + (1024 * 8 * 2 * 77)
+			filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
 	end
 
 	def load(filedata)
 		clear
+
+		@mediatype = :"2hd"
+		@comment = filedata[0x10, 0xf0].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		cyls, heads, nsecs, ssize = 77, 2, 8, 1024
+		offset = HEADER_SIZE
+		(0 ... cyls).each do |cyl|
+			(0 ... heads).each do |head|
+				trkno = cyl * heads + head
+				trk = Track.new
+				@track[trkno] = trk
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
+					trk.sector << w
+				end
+			end
+		end
 	end
 
 	def dump
@@ -1096,6 +1121,9 @@ def fdimageid(filename)
 	when DIP.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  DIP形式 [.dip]\n")
+
+		image = DIP.new(data:filedata)
+		image.report_all
 
 	# SL9821(.slf)
 	when SLF.image?(filedata)
