@@ -17,9 +17,9 @@ Copyright = "Copyright (c) 2024 by opa"
 #=====dpk=====
 
 class String
-	def to_byte;	unpack("C")[0];	end
-	def to_word;	unpack("v")[0];	end
-	def to_dword;	unpack("V")[0];	end
+	def to_byte;	unpack1("C");	end
+	def to_word;	unpack1("v");	end
+	def to_dword;	unpack1("V");	end
 
 	def to_bytes;	unpack("C*");	end
 	def to_words;	unpack("v*");	end
@@ -90,6 +90,13 @@ class DiskImage
 		def nsectors
 			return @sector.length
 		end
+
+		# 全バイトが同一値であるか
+		def is_uniform?(test_value=nil)
+			return nil  if @sector.empty?
+			test_value ||= @sector[0].data[0]
+			return @sector.all?{ |s| s.is_uniform?(test_value) }
+		end
 	end
 
 	class Sector
@@ -100,7 +107,7 @@ class DiskImage
 		end
 
 		def clear
-			@data = nil
+			@data = ""
 			@c = nil
 			@h = nil
 			@r = nil
@@ -131,6 +138,13 @@ class DiskImage
 				st2: @st2,
 				pda: @pda,
 			}
+		end
+
+		# 全バイトが同一値であるか
+		def is_uniform?(test_value=nil)
+			return nil  if @data.empty?
+			test_value ||= @data[0]
+			return @data == test_value * @data.length
 		end
 	end
 
@@ -280,6 +294,29 @@ class DiskImage
 			status_count_s = "#{status_count[0][0].to_hex}が#{status_count[0][1]}個"
 			status_count_s += " 他"  if status_count.length >= 2
 			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_count_s})\n")
+		end
+
+		uniform_map = @track.map do |t|
+			if t&.is_uniform?
+				t.sector[0].data[0]
+			else
+				false
+			end
+		end
+
+		trkno = 1
+		uniform_map.chunk{ |d| d }.each do |c|
+			c_tracks = c[1].length
+
+			if c[0]
+				if c_tracks == 1
+					$stdout.print("  トラック#{trkno}は全て#{c[0].ord.to_hex}です\n")
+				else
+					$stdout.print("  トラック#{trkno}～#{trkno+c_tracks-1}は全て#{c[0].ord.to_hex}です\n")
+				end
+			end
+
+			trkno += c_tracks
 		end
 	end
 end
@@ -614,35 +651,6 @@ def same_data_msg(from_track, to_track, value)
 		$stdout.print("  トラック#{from_track}は全て#{value.ord.to_hex}です\n")
 	else
 		$stdout.print("  トラック#{from_track}～#{to_track}は全て#{value.ord.to_hex}です\n")
-	end
-end
-
-# トラックのデータの状況
-def track_report(filedata, sector_byte = 1024, nsectors = 8, ntracks = 2 * 77)
-	track_length = sector_byte * nsectors
-	$stdout.print("  #{sector_byte}バイト × #{nsectors}セクタ × #{ntracks}トラック\n")
-
-	filled_data_value = nil
-	filled_data_from = nil
-	(0 ... ntracks).each do |track|
-		track_data = filedata[track * track_length, track_length]
-		if track_data == track_data[0] * track_data.length
-			if track_data[0] == filled_data_value
-				# NOP (同データが継続)
-			else
-				if filled_data_value
-					same_data_msg(filled_data_from + 1, track, filled_data_value)
-				end
-				filled_data_value = track_data[0]
-				filled_data_from = track
-			end
-		elsif filled_data_value
-			same_data_msg(filled_data_from + 1, track, filled_data_value)
-			filled_data_value = nil
-		end
-	end
-	if filled_data_value
-		same_data_msg(filled_data_from + 1, ntracks, filled_data_value)
 	end
 end
 
