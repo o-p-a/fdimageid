@@ -389,6 +389,13 @@ class DIM < DiskImage
 
 		# トラック保存状態
 		xtrack_map = filedata[1, 170].to_bytes
+		xtrack_map.each.with_index do |flag, trkno|
+			if flag == 0 || flag == 1
+				# OK:NOP
+			else
+				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
+			end
+		end
 
 		# ファイル作成時刻
 		create_time = filedata[0xba, 8]
@@ -427,12 +434,10 @@ class DIM < DiskImage
 					w.h = head # ヘッドは0オリジン
 					w.r = sec # レコードは1オリジン
 					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize]
+					w.data = filedata[offset, ssize] || ""
 					offset += ssize
 					trk.sector << w
 				end
-			else
-				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
 			end
 		end
 
@@ -575,7 +580,7 @@ class D88 < DiskImage
 						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{nsize} != #{datasize}\n")
 					end
 
-					w.data = filedata[sector_offset, nsize]
+					w.data = filedata[sector_offset, nsize] || ""
 					sector_offset += nsize
 
 					trk.sector << w
@@ -597,7 +602,7 @@ class D88 < DiskImage
 	end
 end
 
-# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html
+# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html https://melog.info/archives/2004/09/30/94#comment-27
 class DCU < DiskImage
 	HEADER_SIZE = 1 + 160 + 1
 
@@ -635,6 +640,93 @@ class DCU < DiskImage
 
 	def load(filedata)
 		clear
+
+		media_type = filedata[0].to_byte
+		case media_type
+		when 0x01 # 2HD(1.25MB 2HS)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 77, 2, 8, 1024
+		when 0x02 # 2HD(1.21MB 2HC)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 15, 512
+		when 0x03 # 2HQ(1.44MB 2HDE)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 18, 512
+		when 0x04 # 2DD(640KB)
+			@mediatype = :"2dd"
+			cyls, heads, nsecs, ssize = 80, 2, 8, 512
+		when 0x05 # 2DD(720KB)
+			@mediatype = :"2dd"
+			cyls, heads, nsecs, ssize = 80, 2, 9, 512
+		when 0x08 # 2HD(1.44MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
+		when 0x11 # 2HD(Disk BASIC)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize, ssize1 = 77, 2, 26, 256, 128
+		when 0x19 # 2DD(Disk BASIC)
+			@mediatype = :"2dd"
+			cyls, heads, nsecs, ssize = 80, 2, 16, 256
+		when 0x21 # 2HD(26sector)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 26, 256
+		else
+			$stdout.print("  メディアタイプ不明: #{media_type.to_hex}\n")
+			@mediatype = :unknown
+			cyls, heads, nsecs, ssize = 0, 0, 0, 0
+		end
+
+		# トラック保存状態
+		xtrack_map = filedata[1, 160].to_bytes
+		xtrack_map.each.with_index do |flag, trkno|
+			if flag == 0 || flag == 1
+				# OK:NOP
+			else
+				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
+			end
+		end
+
+		# 全トラック格納フラグ
+		all_cylinders_stored = filedata[0xa1].to_byte
+		case all_cylinders_stored
+		when 0
+			# OK:NOP
+		when 1
+			$stdout.print("  全トラック格納フラグ: ON\n")
+			(0 ... cyls * heads).each do |trkno|
+				xtrack_map[trkno] = 1
+			end
+		else
+			$stdout.print("  全トラック格納フラグ不正: #{all_cylinders_stored}\n")
+		end
+
+		# データ本体
+		offset = HEADER_SIZE
+		xtrack_map.each.with_index do |flag, trkno|
+			case flag
+			when 0 # なし
+				@track[trkno] = nil
+			when 1 # あり
+				trk = Track.new
+				@track[trkno] = trk
+
+				cyl = trkno / heads
+				head = trkno % heads
+
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
+					trk.sector << w
+				end
+			end
+		end
+
+		excess_data_check(filedata.length, offset)
 	end
 
 	def dump
@@ -692,20 +784,20 @@ end
 class XDF < DiskImage
 	HEADER_SIZE = 0
 	Geometries = [
-		#   siz    media  cyls heads  nsec ssize  ssize  nsec  head   cyl
-		[1474560, :"2hd",   80,    2,   18,  512],	# 1.44MB 2HD
-		[1474560, :"2hd",   80,    2,    9, 1024],	# 1.44MB 2HD
-		[1261568, :"2hd",   77,    2,    8, 1024],	# 1.23MB 2HD
-		[1228800, :"2hd",   80,    2,   15,  512],	# 1.2MB 2HD
-		[1064960, :"2hd",   80,    2,   26,  256],	# 1.04MB 2HD
-		[1021696, :"2hd",   77,    2,   26,  256],	# DISK BASIC 2HD
-		[ 819200, :"2dd",   80,    2,   10,  512],	# 800KB 2DD
-		[ 737280, :"2dd",   80,    2,    9,  512],	# 720KB 2DD
-		[ 655360, :"2dd",   80,    2,    8,  512],	# 640KB 2DD
-		[ 655360, :"2dd",   80,    2,   16,  256],	# DISK BASIC 2DD
-		[ 327680, :"2d",    40,    2,    8,  512],	# 320KB 2D
-		[ 327680, :"1dd",   80,    1,    8,  512],	# 320KB 1DD
-		[ 163840, :"1d",    40,    1,    8,  512],	# 160KB 1D
+		# length   media  cyls heads  nsec ssize ssize1
+		[1474560, :"2hd",   80,    2,   18,  512],			# 1.44MB 2HD
+		[1474560, :"2hd",   80,    2,    9, 1024],			# 1.44MB 2HD
+		[1261568, :"2hd",   77,    2,    8, 1024],			# 1.23MB 2HD
+		[1228800, :"2hd",   80,    2,   15,  512],			# 1.2MB 2HD
+		[1064960, :"2hd",   80,    2,   26,  256],			# 1.04MB 2HD
+		[1021696, :"2hd",   77,    2,   26,  256,  128],	# DISK BASIC 2HD
+		[ 819200, :"2dd",   80,    2,   10,  512],			# 800KB 2DD
+		[ 737280, :"2dd",   80,    2,    9,  512],			# 720KB 2DD
+		[ 655360, :"2dd",   80,    2,    8,  512],			# 640KB 2DD
+		[ 655360, :"2dd",   80,    2,   16,  256],			# DISK BASIC 2DD
+		[ 327680, :"2d",    40,    2,    8,  512],			# 320KB 2D
+		[ 327680, :"1dd",   80,    1,    8,  512],			# 320KB 1DD
+		[ 163840, :"1d",    40,    1,    8,  512],			# 160KB 1D
 	]
 
 	def self.image?(filedata)
@@ -730,25 +822,15 @@ class XDF < DiskImage
 					w.h = head # ヘッドは0オリジン
 					w.r = sec # レコードは1オリジン
 					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize]
+					w.data = filedata[offset, ssize] || ""
 					offset += ssize
 					trk.sector << w
 				end
 			end
 		end
-
-		excess_data_check(filedata.length, offset)
 	end
 
 	def dump
-	end
-end
-
-def same_data_msg(from_track, to_track, value)
-	if from_track == to_track
-		$stdout.print("  トラック#{from_track}は全て#{value.ord.to_hex}です\n")
-	else
-		$stdout.print("  トラック#{from_track}～#{to_track}は全て#{value.ord.to_hex}です\n")
 	end
 end
 
@@ -950,34 +1032,8 @@ def fdimageid(filename)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  DCP/DCU形式 [.dcu .dcp]\n")
 
-		media_type = filedata[0].to_byte
-		case media_type
-		when 0x01
-			media_type_s = "01h: 2HD(1.25MB 2HS)"
-		when 0x02
-			media_type_s = "02h: 2HD(1.21MB 2HC)"
-		when 0x03
-			media_type_s = "03h: 2HQ(1.44MB 2HDE)"
-		when 0x04
-			media_type_s = "04h: 2DD(640KB)"
-		when 0x05
-			media_type_s = "05h: 2DD(720KB)"
-		when 0x08
-			media_type_s = "08h: 2HD(1.44MB)"
-		when 0x11
-			media_type_s = "11h: 2HD(Disk BASIC)"
-		when 0x19
-			media_type_s = "19h: 2DD(Disk BASIC)"
-		when 0x21
-			media_type_s = "21h: 2HD(26sector)"
-		else
-			media_type_s = "不明(#{media_type.to_hex})"
-		end
-
-		$stdout.print("  メディアタイプ: #{media_type_s}\n")
-
-		track_map = filedata[1, 160].to_bytes
-		all_cylinders_stored = filedata[0xa1].to_byte
+		image = DCU.new(data:filedata)
+		image.report_all
 
 	# Anex86(.fdi)
 	when FDI.image?(filedata)
