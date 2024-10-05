@@ -202,9 +202,9 @@ class DiskImage
 				mediatype_s = "2HD"
 				ntracks_std = 80 * 2 # or 77 * 2
 			when :unknown
-				mediatype_s = "不明なメディア"
+				mediatype_s = "不明"
 			else
-				mediatype_s = "メディアタイプ不正(#{@mediatype})"
+				mediatype_s = "不正な値(#{@mediatype})"
 			end
 			$stdout.print("  メディア種別: #{mediatype_s}\n")
 		end
@@ -615,23 +615,24 @@ class DCU < DiskImage
 		end
 
 		media_type = filedata[0].to_byte
-		if media_type == 0x01 && filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77) # 2HD(1.25MB 2HS)
+		case [media_type, filedata.length]
+		when [0x01, HEADER_SIZE + (1024 * 8 * 2 * 77)] # 2HD(1.25MB 2HS)
 			return true
-		elsif media_type == 0x02 && filedata.length == HEADER_SIZE + (512 * 15 * 2 * 80) # 2HD(1.21MB 2HC)
+		when [0x02, HEADER_SIZE + (512 * 15 * 2 * 80)] # 2HD(1.21MB 2HC)
 			return true
-		elsif media_type == 0x03 && filedata.length == HEADER_SIZE + (512 * 18 * 2 * 80) # 2HQ(1.44MB 2HDE)
+		when [0x03, HEADER_SIZE + (512 * 18 * 2 * 80)] # 2HQ(1.44MB 2HDE)
 			return true
-		elsif media_type == 0x04 && filedata.length == HEADER_SIZE + (512 * 8 * 2 * 80) # 2DD(640KB)
+		when [0x04, HEADER_SIZE + (512 * 8 * 2 * 80)] # 2DD(640KB)
 			return true
-		elsif media_type == 0x05 && filedata.length == HEADER_SIZE + (512 * 9 * 2 * 80) # 2DD(720KB)
+		when [0x05, HEADER_SIZE + (512 * 9 * 2 * 80)] # 2DD(720KB)
 			return true
-		elsif media_type == 0x08 && filedata.length == HEADER_SIZE + (1024 * 9 * 2 * 80) # 2HD(1.44MB)
+		when [0x08, HEADER_SIZE + (1024 * 9 * 2 * 80)] # 2HD(1.44MB)
 			return true
-		elsif media_type == 0x11 && filedata.length == HEADER_SIZE + (128*26 + 256*26*153) # 2HD(Disk BASIC)
+		when [0x11, HEADER_SIZE + (128*26 + 256*26*153)] # 2HD(Disk BASIC)
 			return true
-		elsif media_type == 0x19 && filedata.length == HEADER_SIZE + (256 * 16 * 2 * 80) # 2DD(Disk BASIC)
+		when [0x19, HEADER_SIZE + (256 * 16 * 2 * 80)] # 2DD(Disk BASIC)
 			return true
-		elsif media_type == 0x21 && filedata.length == HEADER_SIZE + (256 * 26 * 2 * 80) # 2HD(26sector)
+		when [0x21, HEADER_SIZE + (256 * 26 * 2 * 80)] # 2HD(26sector)
 			return true
 		end
 
@@ -743,6 +744,54 @@ class FDI < DiskImage
 
 	def load(filedata)
 		clear
+
+		fddtype_id = filedata[4, 4].to_dword
+		case fddtype_id
+		when 0x90 # 2HD(1.2MB)
+			@mediatype = :"2hd"
+		when 0x30 # 2HD(1.44MB)
+			@mediatype = :"2hd"
+		when 0x10 # 2DD(640KB or 720KB)
+			@mediatype = :"2dd"
+		else
+			$stdout.print("  メディアタイプ不明: #{fddtype_id.to_hex}\n")
+			@mediatype = :unknown
+		end
+
+		headersize = filedata[0x8, 4].to_dword
+		datasize = filedata[0xc, 4].to_dword
+		ssize, nsecs, heads, cyls = filedata[0x10, 4 * 4].to_dwords
+		$stdout.print("  ヘッダ情報: #{ssize}バイト × #{nsecs}セクタ × #{heads}ヘッド × #{cyls}トラック\n")
+
+		@comment = filedata[0x20, headersize - 0x20].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		calc_datasize = ssize * nsecs * heads * cyls
+		if calc_datasize != datasize
+			$stdout.print("  ヘッダ情報から算出したデータサイズとヘッダ情報のデータサイズが一致しません: #{calc_datasize} != #{datasize}\n")
+		end
+
+		if headersize + datasize != filedata.length
+			$stdout.print("  ヘッダ情報のデータサイズと実際のファイルサイズが一致しません: #{headersize + datasize} != #{filedata.length}\n")
+		end
+
+		offset = headersize
+		(0 ... cyls).each do |cyl|
+			(0 ... heads).each do |head|
+				trkno = cyl * heads + head
+				trk = Track.new
+				@track[trkno] = trk
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
+					trk.sector << w
+				end
+			end
+		end
 	end
 
 	def dump
@@ -1040,39 +1089,8 @@ def fdimageid(filename)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  Anex86形式 [.fdi]\n")
 
-		fddtype_id = filedata[4, 4].to_dword
-		case fddtype_id
-		when 0x90
-			fddtype_id_s = "90h: 2HD(1.2MB)"
-		when 0x30
-			fddtype_id_s = "30h: 2HD(1.44MB)"
-		when 0x10
-			fddtype_id_s = "10h: 2DD"
-		else
-			fddtype_id_s = "#{fddtype_id.to_hex}"
-		end
-
-		headersize = filedata[0x8, 4].to_dword
-
-		datasize = filedata[0xc, 4].to_dword
-		case datasize
-		when 1474560
-			datasize_s = " 2HD(1.44MB)"
-		when 1261568
-			datasize_s = " 2HD(1.23MB)"
-		when 1228800
-			datasize_s = " 2HD(1.2MB)"
-		when 737280
-			datasize_s = " 2DD(720KB)"
-		when 655360
-			datasize_s = " 2DD(640KB)"
-		else
-			datasize_s = ""
-		end
-
-		$stdout.print("  FDD Type: #{fddtype_id_s}\n")
-		$stdout.print("  ヘッダサイズ: #{headersize}バイト\n")
-		$stdout.print("  データサイズ: #{datasize}バイト#{datasize_s}\n")
+		image = FDI.new(data:filedata)
+		image.report_all
 
 	# DIP(.dip)
 	when DIP.image?(filedata)
@@ -1111,7 +1129,7 @@ def fdimageid(filename)
 		image.report_all
 
 	else
-		$stdout.print("#{filename}:\n  不明な形式 (#{filesize}バイト)\n")
+		$stdout.print("#{filename}:\n  形式不明(#{filesize}バイト)\n")
 	end
 end
 
@@ -1154,7 +1172,7 @@ def strip_dim(filename)
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
 	else
-		$stdout.print("  不明な形式 (#{filesize}バイト)\n")
+		$stdout.print("  形式不明(#{filesize}バイト)\n")
 	end
 end
 
@@ -1201,7 +1219,7 @@ def truncate_9(filename)
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, outdata)
 	else
-		$stdout.print("  不明な形式 (#{filesize}バイト)\n")
+		$stdout.print("  形式不明(#{filesize}バイト)\n")
 	end
 end
 
