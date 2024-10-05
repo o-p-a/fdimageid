@@ -167,6 +167,17 @@ class DiskImage
 	def whole_data
 	end
 
+	# ファイルサイズチェック(内部用)
+	def excess_data_check(expect, actual)
+		excess_data_length = expect - actual
+		if excess_data_length > 0
+			$stdout.print("  末尾に不要なデータがあります(#{excess_data_length}バイト余剰)\n")
+		elsif excess_data_length < 0
+			$stdout.print("  読み込み中に末尾に達しました(#{-excess_data_length}バイト不足)\n")
+		end
+	end
+
+	# 情報を表示
 	def report_all
 		if @comment && !@comment.empty?
 			$stdout.print("  コメント: #{@comment.inspect}\n")
@@ -335,14 +346,97 @@ class V98FDD < DiskImage
 	end
 end
 
-# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm
+# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm https://www.pc98.org/project/doc/dim.html
 class DIM < DiskImage
+	HEADER_SIZE = 0x100
+
 	def self.image?(filedata)
-		return filedata[171, 15] == "DIFC HEADER  \0\0"
+		return filedata[171, 15] == "DIFC HEADER  \0\0" &&
+			[0x00, 0x01, 0x02, 0x03, 0x09, 0x11].include?(filedata[0].to_byte)
 	end
 
 	def load(filedata)
 		clear
+
+		# DIFC.Xバージョン
+		difc_version = filedata[0xfe].to_byte
+		difc_version_s = "1.%02x" % difc_version
+		$stdout.print("  DIFC.xバージョン: #{difc_version_s}\n")
+
+		# メディアタイプ
+		media_byte = filedata[0].to_byte
+		case media_byte
+		when 0x00 # 2HD(1.23MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 77, 2, 8, 1024
+		when 0x01 # 2HS(1.44MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
+		when 0x02 # 2HC(1.2MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 15, 512
+		when 0x03 # 2HDE(1.44MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
+		when 0x09 # 2HQ(1.44MB)
+			@mediatype = :"2hd"
+			cyls, heads, nsecs, ssize = 80, 2, 18, 512
+		else
+			$stdout.print("  メディアタイプ不明: #{media_byte.to_hex}\n")
+			@mediatype = :unknown
+			cyls, heads, nsecs, ssize = 0, 0, 0, 0
+		end
+
+		# トラック保存状態
+		xtrack_map = filedata[1, 170].to_bytes
+
+		# ファイル作成時刻
+		create_time = filedata[0xba, 8]
+		if create_time != "\0" * 8
+			create_time = create_time.unpack("CH2H2H2CH2H2H2").map{ |e| e.to_i }
+			create_time[0] = "日月火水木金土"[create_time[0]]
+			create_time[1] = 1980 + create_time[1]
+			$stdout.print("  ファイル作成時刻: " +
+				"#{create_time[1]}/#{"%02d" % create_time[2]}/#{"%02d" % create_time[3]}(#{create_time[0]}) " +
+				"#{create_time[5]}:#{"%02d" % create_time[6]}:#{"%02d" % create_time[7]}(#{(create_time[4]==0) ? "12" : "24"}時間計)\n")
+		end
+
+		# コメント
+		@comment = filedata[0xc2, 60].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		# オーバートラック
+		header_ntracks = filedata[0xff].to_byte
+		$stdout.print("  ヘッダのトラック数: #{header_ntracks}トラック\n")  if header_ntracks > 0
+
+		# データ本体
+		offset = HEADER_SIZE
+		xtrack_map.each.with_index do |flag, trkno|
+			case flag
+			when 0 # なし
+				@track[trkno] = nil
+			when 1 # あり
+				trk = Track.new
+				@track[trkno] = trk
+
+				cyl = trkno / heads
+				head = trkno % heads
+
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize]
+					offset += ssize
+					trk.sector << w
+				end
+			else
+				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
+			end
+		end
+
+		excess_data_check(filedata.length, offset)
 	end
 
 	def dump
@@ -389,7 +483,8 @@ class D88 < DiskImage
 		clear
 
 		# Media flag
-		case filedata[0x1b].to_byte
+		media_flag = filedata[0x1b].to_byte
+		case media_flag
 		when 0x00 # 2D
 			@mediatype = :"2d"
 		when 0x10 # 2DD
@@ -403,7 +498,7 @@ class D88 < DiskImage
 		when 0x40 # 1DD
 			@mediatype = :"1dd"
 		else
-			$stdout.print("  メディアタイプ不明: #{filedata[0x1b].to_byte.to_hex}\n")
+			$stdout.print("  メディアタイプ不明: #{media_flag.to_hex}\n")
 			@mediatype = :unknown
 		end
 
@@ -504,7 +599,7 @@ end
 
 # DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html
 class DCU < DiskImage
-	HEADER_SIZE = 162
+	HEADER_SIZE = 1 + 160 + 1
 
 	def self.image?(filedata)
 		track_map = filedata[1, 160].to_bytes
@@ -595,6 +690,7 @@ end
 
 # XDF(.xdf) べたデータ
 class XDF < DiskImage
+	HEADER_SIZE = 0
 	Geometries = [
 		#   siz    media  cyls heads  nsec ssize  ssize  nsec  head   cyl
 		[1474560, :"2hd",   80,    2,   18,  512],	# 1.44MB 2HD
@@ -623,15 +719,15 @@ class XDF < DiskImage
 		@mediatype, cyls, heads, nsecs, ssize = geom[1 .. 5]
 
 		offset = 0
-		(1 .. cyls).each do |cyl|
-			(1 .. heads).each do |head|
-				trkno = (cyl - 1) * heads + (head - 1)
+		(0 ... cyls).each do |cyl|
+			(0 ... heads).each do |head|
+				trkno = cyl * heads + head
 				trk = Track.new
 				@track[trkno] = trk
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
-					w.c = cyl - 1 # シリンダは0オリジン
-					w.h = head - 1 # ヘッドは0オリジン
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
 					w.r = sec # レコードは1オリジン
 					w.n = (ssize / 128).bit_length - 1
 					w.data = filedata[offset, ssize]
@@ -640,6 +736,8 @@ class XDF < DiskImage
 				end
 			end
 		end
+
+		excess_data_check(filedata.length, offset)
 	end
 
 	def dump
@@ -667,93 +765,10 @@ def fdimageid(filename)
 	# DIFC.X(.dim)
 	when DIM.image?(filedata)
 		$stdout.print("#{filename}:\n")
+		$stdout.print("  X68000 DIFC.X形式 [.dim]\n")
 
-		# DIFC.X version
-		difc_ver = filedata[0xfe].to_byte
-
-		$stdout.print("  X68000 DIFC.X形式(v#{difc_ver}) [.dim]\n")
-
-		# フォーマット種別
-		format_flag = filedata[0].to_byte
-		case format_flag
-		when 0x00
-			format_flag_s = "00h: 2HD(1.23MB)"
-			ntracks_std = 154
-			track_length = 1024 * 8
-		when 0x01
-			format_flag_s = "01h: 2HS(1.44MB)"
-			ntracks_std = 160
-			track_length = 1024 * 9
-		when 0x02
-			format_flag_s = "02h: 2HC(1.2MB)"
-			ntracks_std = 160
-			track_length = 512 * 15
-		when 0x03
-			format_flag_s = "03h: 2HDE(1.44MB)"
-			ntracks_std = 160
-			track_length = 1024 * 9
-		when 0x09
-			format_flag_s = "09h: 2HQ(1.44MB)"
-			ntracks_std = 160
-			track_length = 512 * 18
-		else
-			format_flag_s = "不明(#{format_flag.to_hex})"
-			ntracks_std = 0
-			track_length = 0
-		end
-
-		$stdout.print("  フォーマット種別: #{format_flag_s}\n")
-		$stdout.print("  #{track_length}バイト/トラック\n")
-
-		# 総トラック数 (0の場合もある)
-		ntracks = filedata[0xff].to_byte
-		$stdout.print("  ヘッダのトラック数: #{ntracks}トラック\n")  if ntracks > 0
-
-		# トラックの保存状態
-		xtracks = 0
-		filled_data_value = nil
-		filled_data_from = nil
-		filedata[1, 170].to_bytes.each.with_index(1) do |flag, track|
-			case flag
-			when 0 # なし
-				if filled_data_value
-					same_data_msg(filled_data_from, track-1, filled_data_value)
-					filled_data_value = nil
-				end
-			when 1 # あり
-				track_data = filedata[256 + xtracks * track_length, track_length]
-				xtracks += 1
-				if track_data == track_data[0] * track_data.length
-					if track_data[0] == filled_data_value
-						# NOP (同データが継続)
-					else
-						if filled_data_value
-							same_data_msg(filled_data_from, track-1, filled_data_value)
-						end
-						filled_data_value = track_data[0]
-						filled_data_from = track
-					end
-				elsif filled_data_value
-					same_data_msg(filled_data_from, track-1, filled_data_value)
-					filled_data_value = nil
-				end
-			else
-				$stderr.print("#{ProgName}: トラック保存状態が不正: #{flag}\n")
-			end
-		end
-		if filled_data_value
-			same_data_msg(filled_data_from, 170, filled_data_value)
-		end
-
-		if xtracks == ntracks_std
-			$stdout.print("  #{xtracks}トラック(標準)のデータが格納されています\n")
-		else
-			$stdout.print("  #{xtracks}トラック分のデータが格納されています(標準は#{ntracks_std})\n")
-		end
-
-		if filesize != 256 + xtracks * track_length
-			$stdout.print("  ファイルサイズが不正(#{filesize}バイト)\n")
-		end
+		image = DIM.new(data:filedata)
+		image.report_all
 
 	# T98Next R0(.nfd)
 	when NFD_R0.image?(filedata)
