@@ -112,7 +112,7 @@ class DiskImage
 			@h = nil
 			@r = nil
 			@n = nil
-			@mfm = nil		# false:FM true:MFM
+			@mfm = nil		# false:FM(S) true:MFM(D,H)
 			@ddam = nil		# false:DAM true:DDAM
 			@cmd = nil		# BIOS Read Data Command
 			@status = nil	# BIOS Read Data Status 0:Normal Terminate
@@ -183,7 +183,7 @@ class DiskImage
 			$stdout.print("  コメント: #{@comment.inspect}\n")
 		end
 
-		ntracks_std = 0
+		ntracks_std = nil
 		if @mediatype
 			case @mediatype
 			when :"1d"
@@ -284,10 +284,12 @@ class DiskImage
 			tracks_s = "#{ntracks}(#{xtracks})トラック"
 		end
 
-		if ntracks == ntracks_std
-			tracks_s += "(標準)"
-		else
-			tracks_s += "(標準は#{ntracks_std})"
+		if ntracks_std
+			if ntracks == ntracks_std
+				tracks_s += "(標準)"
+			else
+				tracks_s += "(標準は#{ntracks_std})"
+			end
 		end
 
 		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{tracks_s}\n")
@@ -334,12 +336,61 @@ end
 
 # Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
 class V98FDD < DiskImage
+	HEADER_SIZE = 0xc3fc
+
 	def self.image?(filedata)
 		return filedata[0, 7] == "VFD1.00"
 	end
 
 	def load(filedata)
 		clear
+
+		@mediatype = :"2hd"
+		@comment = filedata[0x8, 0x80].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
+		special_read_drive = filedata[0x8a, 2].to_word
+
+		heads = 2
+		offset = 0xdc
+		sector_map = []
+		(0 ... 26 * 2 * 80).each do |nthsec|
+			cyl, head, sec, ssize_n, fill_byte, ddam, mf, hd, sector_offset =
+				filedata[offset, 12].unpack("C4aC3V")
+			offset += 12
+
+			next  if cyl == 0xff
+
+			trkno = cyl * heads + head
+			ssize = 128 << ssize_n
+
+			@track[trkno] ||= Track.new
+			trk = @track[trkno]
+
+			w = Sector.new
+			w.c = cyl # シリンダは0オリジン
+			w.h = head # ヘッドは0オリジン
+			w.r = sec # レコードは1オリジン
+			w.n = ssize_n
+			w.mfm = (mf != 0) ? true : false
+			w.ddam = (ddam != 0) ? true : false
+			w.data = (sector_offset == 0xffffffff) ? fill_byte * ssize : filedata[sector_offset, ssize]
+			trk.sector << w
+
+			if hd != 1
+				$stdout.print("  2HDフラグが1以外のセクタがあります: #{hd}\n")
+				@mediatype = :unknown
+			end
+		end
+
+		if special_read_drive != 0xffff
+			$stdout.print("  特殊読み込みドライブ設定があります: #{special_read_drive.to_hex}\n")
+
+			next_point = special_read_drive # 0xc3dc
+			begin
+				trkno, in_ax, in_bx, in_cx, in_dx, out_ax, out_bx, out_cx, out_dx, out_flag, data_point, next_point, count, neg_count =
+					filedata[next_point, 32].unpack("v10V2v2")
+			end while(next_point != 0xffffffff && next_point != 0)
+		end
 	end
 
 	def dump
@@ -810,7 +861,6 @@ class DIP < DiskImage
 	def load(filedata)
 		clear
 
-		@mediatype = :"2hd"
 		@comment = filedata[0x10, 0xf0].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
 
 		cyls, heads, nsecs, ssize = 77, 2, 8, 1024
@@ -910,13 +960,15 @@ end
 
 def fdimageid(filename)
 	filedata = read_file(filename).freeze
-	filesize = filedata.length
 
 	case
 	# Virtual98(.fdd)
 	when V98FDD.image?(filedata)
 		$stdout.print("#{filename}:\n")
 		$stdout.print("  Virtual98形式 [.fdd]\n")
+
+		image = V98FDD.new(data:filedata)
+		image.report_all
 
 	# DIFC.X(.dim)
 	when DIM.image?(filedata)
@@ -1134,7 +1186,7 @@ def fdimageid(filename)
 	when XDF.image?(filedata)
 		$stdout.print("#{filename}:\n")
 
-		case filesize
+		case filedata.length
 		when 512 * 18 * 2 * 80 # 1.44MB 2HD
 			$stdout.print("  べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
 		when 1024 * 8 * 2 * 77 # 1.23MB 2HD
@@ -1157,29 +1209,28 @@ def fdimageid(filename)
 		image.report_all
 
 	else
-		$stdout.print("#{filename}:\n  形式不明(#{filesize}バイト)\n")
+		$stdout.print("#{filename}:\n  形式不明(#{filedata.length}バイト)\n")
 	end
 end
 
 # .dim → .xdf 変換
 def strip_dim(filename)
+	$stdout.print("#{filename}:\n")
+	filedata = read_file(filename).freeze
+	outfilename = filename + ".xdf"
+
 	if !DIM.image?(filedata)
 		$stderr.print("#{ProgName}: DIFC.X形式ではありません: #{filename}\n")
 		return
 	end
 
-	$stdout.print("#{filename}:\n")
-
-	filedata = read_file(filename)
-	filesize = filedata.length
-	outfilename = filename + ".xdf"
-
-	if filesize == 256 + 1024 * 8 * 2 * 77 # 1261824
+	case filedata.length
+	when 256 + 1024 * 8 * 2 * 77 # 1261824
 		data = filedata[256, 1024 * 8 * 2 * 77]
 
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
-	elsif filesize == 256 + 1024 * 8 * 2 * 80 # 1310976
+	when 256 + 1024 * 8 * 2 * 80 # 1310976
 		data = filedata[256, 1024 * 8 * 2 * 77]
 		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (80 - 77)]
 		if data2 != data2[0] * data2.length
@@ -1189,7 +1240,7 @@ def strip_dim(filename)
 
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
-	elsif filesize == 256 + 1024 * 8 * 2 * 85 # 1392896
+	when 256 + 1024 * 8 * 2 * 85 # 1392896
 		data = filedata[256, 1024 * 8 * 2 * 77]
 		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (85 - 77)]
 		if data2 != data2[0] * data2.length
@@ -1200,18 +1251,16 @@ def strip_dim(filename)
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
 	else
-		$stdout.print("  形式不明(#{filesize}バイト)\n")
+		$stdout.print("  形式不明(#{filedata.length}バイト)\n")
 	end
 end
 
 # 9セクタ2DD(720KB)のイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD(640KB)のイメージにする
 def truncate_9(filename)
-	filedata = read_file(filename)
-	filesize = filedata.length
-
 	$stdout.print("#{filename}:\n")
+	filedata = read_file(filename).freeze
 
-	if filesize == 512 * 9 * 2 * 80
+	if filedata.length == 512 * 9 * 2 * 80
 		outdata = ""
 		(0 ... 2 * 80).each do |track|
 			outdata += filedata[512 * 9 * track, 512 * 8]
@@ -1247,7 +1296,7 @@ def truncate_9(filename)
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, outdata)
 	else
-		$stdout.print("  形式不明(#{filesize}バイト)\n")
+		$stdout.print("  形式不明(#{filedata.length}バイト)\n")
 	end
 end
 
