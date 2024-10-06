@@ -959,28 +959,24 @@ class XDF < DiskImage
 end
 
 def fdimageid(filename)
+	$stdout.print("#{filename}:\n")
 	filedata = read_file(filename).freeze
 
 	case
 	# Virtual98(.fdd)
 	when V98FDD.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  Virtual98形式 [.fdd]\n")
-
 		image = V98FDD.new(data:filedata)
 		image.report_all
 
 	# DIFC.X(.dim)
 	when DIM.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  X68000 DIFC.X形式 [.dim]\n")
-
 		image = DIM.new(data:filedata)
 		image.report_all
 
 	# T98Next R0(.nfd)
 	when NFD_R0.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  T98-Next NFD r0形式 [.nfd]\n")
 
 		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
@@ -1063,7 +1059,6 @@ def fdimageid(filename)
 
 	# T98Next R1(.nfd)
 	when NFD_R1.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  T98-Next NFD r1形式 [.nfd]\n")
 
 		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
@@ -1147,45 +1142,34 @@ def fdimageid(filename)
 
 	# D88(.d88)
 	when D88.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  D88形式 [.d88 .d98 .88d .98d]\n")
-
 		image = D88.new(data:filedata)
 		image.report_all
 
 	# DCP/DCU(.dcu)
 	when DCU.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  DCP/DCU形式 [.dcu .dcp]\n")
-
 		image = DCU.new(data:filedata)
 		image.report_all
 
 	# Anex86(.fdi)
 	when FDI.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  Anex86形式 [.fdi]\n")
-
 		image = FDI.new(data:filedata)
 		image.report_all
 
 	# DIP(.dip)
 	when DIP.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  DIP形式 [.dip]\n")
-
 		image = DIP.new(data:filedata)
 		image.report_all
 
 	# SL9821(.slf)
 	when SLF.image?(filedata)
-		$stdout.print("#{filename}:\n")
 		$stdout.print("  SL9821形式 [.slf]\n")
 
 	# XDF(.xdf)
 	when XDF.image?(filedata)
-		$stdout.print("#{filename}:\n")
-
 		case filedata.length
 		when 512 * 18 * 2 * 80 # 1.44MB 2HD
 			$stdout.print("  べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
@@ -1209,7 +1193,7 @@ def fdimageid(filename)
 		image.report_all
 
 	else
-		$stdout.print("#{filename}:\n  形式不明(#{filedata.length}バイト)\n")
+		$stdout.print("  形式不明(#{filedata.length}バイト)\n")
 	end
 end
 
