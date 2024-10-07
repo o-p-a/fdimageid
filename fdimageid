@@ -505,6 +505,51 @@ class NFD_R0 < DiskImage
 
 	def load(filedata)
 		clear
+
+		@comment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
+		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
+		byHead = filedata[0x10 + 0x100 + 5].to_byte
+
+		id_offset = 0x120
+		data_offset = dwHeadSize
+		(0 ... 163).each do |trkno|
+			(0 ... 26).each do |sec|
+				w = Sector.new
+				w.c, w.h, w.r, w.n, w.mfm, w.ddam, w.status, w.st0, w.st1, w.st2, w.pda =
+					filedata[id_offset, 11].unpack("C11")
+				id_offset += 0x10
+
+				next  if w.c == 0xff
+
+				case w.mfm
+				when 0
+					w.mfm = false
+				when 1
+					w.mfm = true
+				else
+					$stdout.print("  flMFMの値が不正: #{w.mfm}\n")
+					w.mfm = nil
+				end
+
+				case w.ddam
+				when 0
+					w.ddam = false
+				when 1
+					w.ddam = true
+				else
+					$stdout.print("  flDDAMの値が不正: #{w.ddam}\n")
+					w.ddam = nil
+				end
+
+				ssize = 128 << w.n
+				w.data = filedata[data_offset, ssize] || ""
+				data_offset += ssize
+
+				trk = (@track[trkno] ||= Track.new)
+				trk.sector << w
+			end
+		end
 	end
 
 	def dump
@@ -625,13 +670,13 @@ class D88 < DiskImage
 						$stdout.print("  トラック#{trkno+1}のNP2kai RPM不正: #{rpm}\n")
 					end
 
-					nsize = 128 << w.n
-					if nsize != datasize
-						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{nsize} != #{datasize}\n")
+					ssize = 128 << w.n
+					if ssize != datasize
+						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{ssize} != #{datasize}\n")
 					end
 
-					w.data = filedata[sector_offset, nsize] || ""
-					sector_offset += nsize
+					w.data = filedata[sector_offset, ssize] || ""
+					sector_offset += ssize
 
 					trk.sector << w
 				end while trk.sector.length < nsectors
@@ -1050,84 +1095,8 @@ def fdimageid(filename)
 	# T98Next R0(.nfd)
 	when NFD_R0.image?(filedata)
 		$stdout.print("  T98-Next NFD r0形式 [.nfd]\n")
-
-		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
-		flProtect = filedata[0x10 + 0x100 + 4].to_byte
-
-		$stdout.print("  コメント: #{szComment.inspect}\n")  if !szComment.empty?
-		$stdout.print("  ヘッダサイズ: #{dwHeadSize}バイト\n")
-		$stdout.print("  読み取り専用\n")  if flProtect != 0
-
-		trackInfo = []
-		(0 ... 163).each do |track|
-			trackInfo[track] = { sectorInfo:[] }
-			(0 ... 26).each do |sector|
-				w = {}
-				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:byST0], w[:byST1], w[:byST2], w[:byPDA] =
-					filedata[0x10 + 0x100 + 0x10 + (track * 26 + sector) * 0x10, 11].unpack("C11")
-				w[:byST0] &= 0xfb # Head Address は無視
-				trackInfo[track][:sectorInfo] << w  if w[:c] != 0xff
-			end
-		end
-
-		minval = {}
-		maxval = {}
-		minnsec = nil
-		maxnsec = nil
-		trackInfo.each do |ti|
-			next  if ti[:sectorInfo].empty?
-
-			ti[:sectorInfo].each do |si|
-				[:c, :h, :r, :n, :flMFM, :flDDAM, :byStatus, :byST0, :byST1, :byST2, :byPDA].each do |member|
-					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
-					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
-				end
-			end
-			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
-			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
-		end
-
-		ntracks = trackInfo.count { |ti| !ti[:sectorInfo].empty? }
-		ntracks_s = "#{ntracks}トラック"
-
-		sector_size = 128 << maxval[:n]
-		if maxval[:n] == minval[:n]
-			sector_size_s = "#{sector_size}バイト"
-		else
-			sector_size_s = "#{sector_size}バイト(混在あり)"
-		end
-
-		nsectors = maxnsec
-		if maxnsec == minnsec
-			nsectors_s = "#{nsectors}セクタ"
-		else
-			nsectors_s = "#{nsectors}セクタ(混在あり)"
-		end
-
-		byPDA = maxval[:byPDA]
-		case byPDA
-		when 0x90
-			byPDA_s = "90h: 2HD(1.2MB)"
-		when 0x30
-			byPDA_s = "30h: 2HD(1.44MB)"
-		when 0x10
-			byPDA_s = "10h: 2DD(640KB)"
-		else
-			byPDA_s = "#{byPDA.to_hex}"
-		end
-		if maxval[:byPDA] != minval[:byPDA]
-			byPDA_s += "(混在)"
-		end
-
-		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
-		$stdout.print("  FM/MFM混在\n")  if maxval[:flMFM] != minval[:flMFM]
-		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:flDDAM] != 0
-		$stdout.print("  BIOS Resultが0以外のセクタがあります\n")  if maxval[:byStatus] != 0
-		$stdout.print("  FDC Store Status 0が0以外のセクタがあります\n")  if maxval[:byST0] != 0
-		$stdout.print("  FDC Store Status 1が0以外のセクタがあります\n")  if maxval[:byST1] != 0
-		$stdout.print("  FDC Store Status 2が0以外のセクタがあります\n")  if maxval[:byST2] != 0
-		$stdout.print("  PDAデバイスアドレス: #{byPDA_s}\n")
+		image = NFD_R0.new(data:filedata)
+		image.report_all
 
 	# T98Next R1(.nfd)
 	when NFD_R1.image?(filedata)
