@@ -345,15 +345,14 @@ class V98FDD < DiskImage
 	def load(filedata)
 		clear
 
-		@mediatype = :"2hd"
 		@comment = filedata[0x8, 0x80].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
 		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
 		special_read_drive = filedata[0x8a, 2].to_word
 
-		heads = 2
+		cyls, heads = 80, 2
 		offset = 0xdc
 		sector_map = []
-		(0 ... 26 * 2 * 80).each do |nthsec|
+		(0 ... 26 * heads * cyls).each do |nthsec|
 			cyl, head, sec, ssize_n, fill_byte, ddam, mf, hd, sector_offset =
 				filedata[offset, 12].unpack("C4aC3V")
 			offset += 12
@@ -363,8 +362,7 @@ class V98FDD < DiskImage
 			trkno = cyl * heads + head
 			ssize = 128 << ssize_n
 
-			@track[trkno] ||= Track.new
-			trk = @track[trkno]
+			trk = (@track[trkno] ||= Track.new)
 
 			w = Sector.new
 			w.c = cyl # シリンダは0オリジン
@@ -394,6 +392,7 @@ class V98FDD < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -473,12 +472,10 @@ class DIM < DiskImage
 			when 0 # なし
 				@track[trkno] = nil
 			when 1 # あり
-				trk = Track.new
-				@track[trkno] = trk
-
 				cyl = trkno / heads
 				head = trkno % heads
 
+				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
 					w.c = cyl # シリンダは0オリジン
@@ -496,6 +493,7 @@ class DIM < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -510,6 +508,7 @@ class NFD_R0 < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -524,6 +523,7 @@ class NFD_R1 < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -574,8 +574,7 @@ class D88 < DiskImage
 			if track_offset == 0
 				@track[trkno] = nil
 			else
-				trk = Track.new
-				@track[trkno] = trk
+				trk = (@track[trkno] ||= Track.new)
 
 				sector_offset = track_offset
 				track_nsectors = nil
@@ -650,6 +649,7 @@ class D88 < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -759,12 +759,10 @@ class DCU < DiskImage
 			when 0 # なし
 				@track[trkno] = nil
 			when 1 # あり
-				trk = Track.new
-				@track[trkno] = trk
-
 				cyl = trkno / heads
 				head = trkno % heads
 
+				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
 					w.c = cyl # シリンダは0オリジン
@@ -782,6 +780,7 @@ class DCU < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -829,8 +828,7 @@ class FDI < DiskImage
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
-				trk = Track.new
-				@track[trkno] = trk
+				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
 					w.c = cyl # シリンダは0オリジン
@@ -846,6 +844,7 @@ class FDI < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -868,8 +867,7 @@ class DIP < DiskImage
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
-				trk = Track.new
-				@track[trkno] = trk
+				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
 					w.c = cyl # シリンダは0オリジン
@@ -885,6 +883,7 @@ class DIP < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -898,9 +897,82 @@ class SLF < DiskImage
 
 	def load(filedata)
 		clear
+
+		version, filesize, flag = filedata[4, 12].to_dwords
+		$stdout.print("  SLFバージョン: #{version.to_hex}\n")
+
+		if filesize != filedata.length
+			$stdout.print("  ヘッダのファイルサイズと実際のサイズが異なります: #{filesize} != #{filedata.length}\n")
+		end
+
+		if flag != 0
+			$stdout.print("  フラグが設定されています: #{flag.to_hex}\n")
+		end
+
+		cyls, heads = 80, 2
+		(0 ... cyls * heads).each do |trkno|
+			tdata_offset, tdata_size, unformat_size, data_type, nsecs, gap4a_size, sync_size, gap1_size =
+				filedata[0x10 + trkno * 0x20, 28].unpack("V3v2V3")
+
+			case data_type
+			when 0xffff # -1:未フォーマット
+				@track[trkno] = nil
+			when 0 # 物理フォーマットデータ
+				$stdout.print("  物理フォーマットのトラックには対応していません: #{trkno+1}トラック\n")
+				@track[trkno] = nil
+			when 1, 2 # 1:FM/2:MFMフォーマットデータ
+				sheader_offset = tdata_offset
+				trk = (@track[trkno] ||= Track.new)
+				(1 .. nsecs).each do |sec|
+					sdata_offset, status, isync_size, gap2_size, dsync_size, gap3_size,
+						id_crc, data_crc, idam_pattern, id_c, id_h, id_s, id_n, dataam_pattern =
+						filedata[sheader_offset, 32].unpack("V2v6VC4V")
+					sheader_offset += 0x20
+
+					sdata_offset = tdata_offset + sdata_offset
+					ssize = 128 << id_n
+
+					w = Sector.new
+					w.c = id_c # シリンダは0オリジン
+					w.h = id_h # ヘッドは0オリジン
+					w.r = id_s # レコードは1オリジン
+					w.n = id_n
+					w.data = filedata[sdata_offset, ssize] || ""
+					w.mfm = (data_type == 2) ? true : false
+					# sdata_offset += ssize
+					trk.sector << w
+
+					if (status & 0x1) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): IDAMパターンエラー\n")
+					end
+					if (status & 0x2) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): ID CRCエラー\n")
+					end
+					if (status & 0x4) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATAAMパターンエラー\n")
+					end
+					if (status & 0x8) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATA CRCエラー\n")
+					end
+					if (status & 0x10) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): セクタ構造のエラー\n")
+					end
+					if (status & 0x100) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): Deletedセクタ\n")
+					end
+					if (status & 0x200) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 入れ子セクタ\n")
+					end
+					if (status | 0x31f) != 0x31f # 上記以外のビットが立っていたら
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 不明な値(#{status.to_hex})\n")
+					end
+				end
+			end
+		end
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -932,14 +1004,13 @@ class XDF < DiskImage
 		clear
 
 		geom = Geometries.find{ |g| g[0] == filedata.length }
-		@mediatype, cyls, heads, nsecs, ssize = geom[1 .. 5]
+		cyls, heads, nsecs, ssize = geom[2 .. 5]
 
 		offset = 0
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
-				trk = Track.new
-				@track[trkno] = trk
+				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					w = Sector.new
 					w.c = cyl # シリンダは0オリジン
@@ -955,6 +1026,7 @@ class XDF < DiskImage
 	end
 
 	def dump
+		raise("Not implemented")
 	end
 end
 
@@ -1167,6 +1239,8 @@ def fdimageid(filename)
 	# SL9821(.slf)
 	when SLF.image?(filedata)
 		$stdout.print("  SL9821形式 [.slf]\n")
+		image = SLF.new(data:filedata)
+		image.report_all
 
 	# XDF(.xdf)
 	when XDF.image?(filedata)
