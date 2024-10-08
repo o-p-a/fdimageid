@@ -473,6 +473,11 @@ class NFD_R0 < DiskImage
 
 				next  if w.c == 0xff
 
+				if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
+					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c}/#{w.h}/#{w.r}/#{w.n}\n")
+					next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+				end
+
 				case w.mfm
 				when 0
 					w.mfm = false
@@ -546,6 +551,11 @@ class NFD_R1 < DiskImage
 				w.c, w.h, w.r, w.n, w.mfm, w.ddam, w.status, w.st0, w.st1, w.st2, byRetry, w.pda =
 					filedata[track_offset, 12].unpack("C12")
 				track_offset += 0x10
+
+				if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
+					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c}/#{w.h}/#{w.r}/#{w.n}\n")
+					next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+				end
 
 				case w.mfm
 				when 0
@@ -673,19 +683,19 @@ class SLF < DiskImage
 				sheader_offset = tdata_offset
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
+					w = Sector.new
 					sdata_offset, status, isync_size, gap2_size, dsync_size, gap3_size,
-						id_crc, data_crc, idam_pattern, id_c, id_h, id_s, id_n, dataam_pattern =
+						id_crc, data_crc, idam_pattern, w.c, w.h, w.r, w.n, dataam_pattern =
 						filedata[sheader_offset, 32].unpack("V2v6VC4V")
 					sheader_offset += 0x20
 
-					sdata_offset = tdata_offset + sdata_offset
-					ssize = 128 << id_n
+					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
+						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
+						next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+					end
 
-					w = Sector.new
-					w.c = id_c # シリンダは0オリジン
-					w.h = id_h # ヘッドは0オリジン
-					w.r = id_s # レコードは1オリジン
-					w.n = id_n
+					sdata_offset = tdata_offset + sdata_offset
+					ssize = 128 << w.n
 					w.mfm = (data_type == 2) ? true : false
 					w.data = filedata[sdata_offset, ssize] || ""
 					trk.sector << w
@@ -897,23 +907,22 @@ class D88 < DiskImage
 		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
 		track_offsets = track_offsets.first(header_tracks)
 
-		track_offsets.each.with_index do |track_offset, trkno|
-			if track_offset == 0
+		track_offsets.each.with_index do |offset, trkno|
+			if offset == 0
 				@track[trkno] = nil
 			else
 				trk = (@track[trkno] ||= Track.new)
 
-				sector_offset = track_offset
 				track_nsectors = nil
 				begin
 					w = Sector.new
 					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
-						filedata[sector_offset, 16].unpack("C4vC3x4Cv")
-					sector_offset += 0x10
+						filedata[offset, 16].unpack("C4vC3x4Cv")
+					offset += 0x10
 
 					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
 						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
-						break  if w.n > 6 # 致命的なので後続処理中止
+						break  if w.n > 6 # 致命的なのでこのトラックはスキップ
 					end
 
 					if nsectors > 32
@@ -957,15 +966,15 @@ class D88 < DiskImage
 						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{ssize} != #{datasize}\n")
 					end
 
-					w.data = filedata[sector_offset, ssize] || ""
-					sector_offset += ssize
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
 
 					trk.sector << w
 				end while trk.sector.length < nsectors
 
 				next_track_start = (track_offsets[(trkno + 1) .. -1].find { |o| o != 0 }) || filedata.length
-				if sector_offset != next_track_start
-					if sector_offset < next_track_start
+				if offset != next_track_start
+					if offset < next_track_start
 						$stdout.print("  トラック#{trkno+1}のデータの後に不要なデータがあります\n")
 					else
 						$stdout.print("  トラック#{trkno+1}のデータが次のトラックに達しています\n")
@@ -1050,7 +1059,7 @@ class FDI < DiskImage
 	end
 end
 
-# DCP/DCU(.dcu) ヘッダ(162バイト)+データ https://www.pc98.org/project/doc/dcp.html https://melog.info/archives/2004/09/30/94#comment-27
+# DCP/DCU(.dcu) ヘッダ(162バイト)+べたデータ https://www.pc98.org/project/doc/dcp.html https://melog.info/archives/2004/09/30/94#comment-27
 class DCU < DiskImage
 	HEADER_SIZE = 1 + 160 + 1
 
