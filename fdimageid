@@ -148,6 +148,11 @@ class DiskImage
 		end
 	end
 
+	# 空か?
+	def empty?
+		return @mediatype.nil? && @writeprotect.nil? && @comment.nil? && xtracks == 0
+	end
+
 	# データのある最終トラック番号
 	def ntracks
 		last_empty_track_count = @track.reverse.find_index { |t| !t.nil? }
@@ -782,6 +787,25 @@ class V98FDD < DiskImage
 	end
 end
 
+# ERCVFD(.vfd) ヘッダ(64バイト)+セクタ毎に(ヘッダ(10バイト)+データ)
+class ERCVFD < DiskImage
+	HEADER_SIZE = 0x40
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 8] == "ERCVFD01"
+	end
+
+	def load(filedata)
+		raise("Not implemented")
+	end
+
+	def dump
+		raise("Not implemented")
+	end
+end
+
 # DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
 class DIP < DiskImage
 	HEADER_SIZE = 256
@@ -1249,6 +1273,12 @@ def fdimageid(filename)
 		$stdout.print("  💾 Virtual98形式 [.fdd]\n")
 		image = V98FDD.new(data:filedata)
 		image.report_all
+
+	# ERCVFD(.vfd)
+	when ERCVFD.image?(filedata)
+		$stdout.print("  💾 ERCACHE ERCVFD形式 [.vfd]\n")
+		# image = ERCVFD.new(data:filedata)
+		# image.report_all
 
 	# DIP(.dip)
 	when DIP.image?(filedata)
