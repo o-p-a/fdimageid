@@ -334,69 +334,6 @@ class DiskImage
 	end
 end
 
-# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
-class V98FDD < DiskImage
-	HEADER_SIZE = 0xc3fc
-
-	def self.image?(filedata)
-		return false  if filedata.length < HEADER_SIZE
-
-		return filedata[0, 7] == "VFD1.00"
-	end
-
-	def load(filedata)
-		clear
-
-		@mediatype = :"2hd" # 違ったらあとでリセット
-		@comment = filedata[0x8, 0x80].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
-		special_read_drive = filedata[0x8a, 2].to_word
-
-		cyls, heads = 80, 2
-		sector_map = []
-		(0 ... 26 * heads * cyls).each do |nthsec|
-			cyl, head, sec, ssize_n, fill_byte, ddam, mf, hd, sector_offset =
-				filedata[0xdc + 12 * nthsec, 12].unpack("C4aC3V")
-
-			next  if cyl == 0xff
-
-			trkno = cyl * heads + head
-			ssize = 128 << ssize_n
-
-			trk = (@track[trkno] ||= Track.new)
-
-			w = Sector.new
-			w.c = cyl # シリンダは0オリジン
-			w.h = head # ヘッドは0オリジン
-			w.r = sec # レコードは1オリジン
-			w.n = ssize_n
-			w.mfm = (mf != 0) ? true : false
-			w.ddam = (ddam != 0) ? true : false
-			w.data = (sector_offset == 0xffffffff) ? fill_byte * ssize : filedata[sector_offset, ssize]
-			trk.sector << w
-
-			if hd != 1
-				$stdout.print("  2HDフラグが1でないセクタがあります: #{hd}\n")
-				@mediatype = nil
-			end
-		end
-
-		if special_read_drive != 0xffff
-			$stdout.print("  特殊読み込みドライブ設定があります: #{special_read_drive.to_hex}\n")
-
-			next_point = special_read_drive # 0xc3dc
-			begin
-				trkno, in_ax, in_bx, in_cx, in_dx, out_ax, out_bx, out_cx, out_dx, out_flag, data_point, next_point, count, neg_count =
-					filedata[next_point, 32].unpack("v10V2v2")
-			end while(next_point != 0xffffffff && next_point != 0)
-		end
-	end
-
-	def dump
-		raise("Not implemented")
-	end
-end
-
 # DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm https://www.pc98.org/project/doc/dim.html
 class DIM < DiskImage
 	HEADER_SIZE = 0x100
@@ -690,6 +627,204 @@ class NFD_R1 < DiskImage
 	end
 end
 
+# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+class SLF < DiskImage
+	HEADER_SIZE = 16 + 80 * 2 * 32
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 4] == "FDIM" &&
+			filedata[4, 4].to_dword == 0x10000 &&
+			filedata[8, 4].to_dword == filedata.length
+	end
+
+	def load(filedata)
+		clear
+
+		version, filesize, flag = filedata[4, 12].to_dwords
+		$stdout.print("  SLFバージョン: #{version.to_hex}\n")
+
+		if filesize != filedata.length
+			$stdout.print("  ヘッダのファイルサイズと実際のサイズが異なります: #{filesize} != #{filedata.length}\n")
+		end
+
+		if flag != 0
+			$stdout.print("  フラグが設定されています: #{flag.to_hex}\n")
+		end
+
+		cyls, heads = 80, 2
+		(0 ... cyls * heads).each do |trkno|
+			tdata_offset, tdata_size, unformat_size, data_type, nsecs, gap4a_size, sync_size, gap1_size =
+				filedata[0x10 + trkno * 0x20, 28].unpack("V3v2V3")
+
+			case data_type
+			when 0xffff # -1:未フォーマット
+				@track[trkno] = nil
+			when 0 # 物理フォーマットデータ
+				$stdout.print("  物理フォーマットのトラックには対応していません: #{trkno+1}トラック\n")
+				@track[trkno] = nil
+			when 1, 2 # 1:FM/2:MFMフォーマットデータ
+				sheader_offset = tdata_offset
+				trk = (@track[trkno] ||= Track.new)
+				(1 .. nsecs).each do |sec|
+					sdata_offset, status, isync_size, gap2_size, dsync_size, gap3_size,
+						id_crc, data_crc, idam_pattern, id_c, id_h, id_s, id_n, dataam_pattern =
+						filedata[sheader_offset, 32].unpack("V2v6VC4V")
+					sheader_offset += 0x20
+
+					sdata_offset = tdata_offset + sdata_offset
+					ssize = 128 << id_n
+
+					w = Sector.new
+					w.c = id_c # シリンダは0オリジン
+					w.h = id_h # ヘッドは0オリジン
+					w.r = id_s # レコードは1オリジン
+					w.n = id_n
+					w.mfm = (data_type == 2) ? true : false
+					w.data = filedata[sdata_offset, ssize] || ""
+					trk.sector << w
+
+					if (status & 0x1) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): IDAMパターンエラー\n")
+					end
+					if (status & 0x2) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): ID CRCエラー\n")
+					end
+					if (status & 0x4) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATAAMパターンエラー\n")
+					end
+					if (status & 0x8) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATA CRCエラー\n")
+					end
+					if (status & 0x10) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): セクタ構造のエラー\n")
+					end
+					if (status & 0x100) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): Deletedセクタ\n")
+					end
+					if (status & 0x200) != 0
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 入れ子セクタ\n")
+					end
+					if (status | 0x31f) != 0x31f # 上記以外のビットが立っていたら
+						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 不明な値(#{status.to_hex})\n")
+					end
+				end
+			end
+		end
+	end
+
+	def dump
+		raise("Not implemented")
+	end
+end
+
+# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
+class V98FDD < DiskImage
+	HEADER_SIZE = 0xc3fc
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 7] == "VFD1.00"
+	end
+
+	def load(filedata)
+		clear
+
+		@mediatype = :"2hd" # 違ったらあとでリセット
+		@comment = filedata[0x8, 0x80].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
+		special_read_drive = filedata[0x8a, 2].to_word
+
+		cyls, heads = 80, 2
+		sector_map = []
+		(0 ... 26 * heads * cyls).each do |nthsec|
+			cyl, head, sec, ssize_n, fill_byte, ddam, mf, hd, sector_offset =
+				filedata[0xdc + 12 * nthsec, 12].unpack("C4aC3V")
+
+			next  if cyl == 0xff
+
+			trkno = cyl * heads + head
+			ssize = 128 << ssize_n
+
+			trk = (@track[trkno] ||= Track.new)
+
+			w = Sector.new
+			w.c = cyl # シリンダは0オリジン
+			w.h = head # ヘッドは0オリジン
+			w.r = sec # レコードは1オリジン
+			w.n = ssize_n
+			w.mfm = (mf != 0) ? true : false
+			w.ddam = (ddam != 0) ? true : false
+			w.data = (sector_offset == 0xffffffff) ? fill_byte * ssize : filedata[sector_offset, ssize]
+			trk.sector << w
+
+			if hd != 1
+				$stdout.print("  2HDフラグが1でないセクタがあります: #{hd}\n")
+				@mediatype = nil
+			end
+		end
+
+		if special_read_drive != 0xffff
+			$stdout.print("  特殊読み込みドライブ設定があります: #{special_read_drive.to_hex}\n")
+
+			next_point = special_read_drive # 0xc3dc
+			begin
+				trkno, in_ax, in_bx, in_cx, in_dx, out_ax, out_bx, out_cx, out_dx, out_flag, data_point, next_point, count, neg_count =
+					filedata[next_point, 32].unpack("v10V2v2")
+			end while(next_point != 0xffffffff && next_point != 0)
+		end
+	end
+
+	def dump
+		raise("Not implemented")
+	end
+end
+
+# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
+class DIP < DiskImage
+	HEADER_SIZE = 256
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
+			filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
+	end
+
+	def load(filedata)
+		clear
+
+		@comment = filedata[0x10, 0xf0].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		cyls, heads, nsecs, ssize = 77, 2, 8, 1024
+		offset = HEADER_SIZE
+		(0 ... cyls).each do |cyl|
+			(0 ... heads).each do |head|
+				trkno = cyl * heads + head
+				trk = (@track[trkno] ||= Track.new)
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
+					trk.sector << w
+				end
+			end
+		end
+
+		excess_data_check(filedata.length, offset)
+	end
+
+	def dump
+		raise("Not implemented")
+	end
+end
+
 # D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
 class D88 < DiskImage
 	HEADER_SIZE = 0x2a0 # or 0x2b0
@@ -814,6 +949,76 @@ class D88 < DiskImage
 				end
 			end
 		end
+	end
+
+	def dump
+		raise("Not implemented")
+	end
+end
+
+# Anex86(.fdi) ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
+class FDI < DiskImage
+	HEADER_SIZE = 0x20 # コメント除く最小サイズ
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 4].to_dword == 0 &&
+			[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
+			filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filedata.length
+	end
+
+	def load(filedata)
+		clear
+
+		fddtype_id = filedata[4, 4].to_dword
+		case fddtype_id
+		when 0x90 # 2HD(1.2MB)
+			@mediatype = :"2hd"
+		when 0x30 # 2HD(1.44MB)
+			@mediatype = :"2hd"
+		when 0x10 # 2DD(640KB or 720KB)
+			@mediatype = :"2dd"
+		else
+			$stdout.print("  メディアタイプ不明: #{fddtype_id.to_hex}\n")
+			@mediatype = :unknown
+		end
+
+		headersize = filedata[0x8, 4].to_dword
+		datasize = filedata[0xc, 4].to_dword
+		ssize, nsecs, heads, cyls = filedata[0x10, 4 * 4].to_dwords
+		$stdout.print("  ヘッダ情報: #{ssize}バイト × #{nsecs}セクタ × #{heads}ヘッド × #{cyls}トラック\n")
+
+		@comment = filedata[0x20, headersize - 0x20].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+
+		calc_datasize = ssize * nsecs * heads * cyls
+		if calc_datasize != datasize
+			$stdout.print("  ヘッダ情報から算出したデータサイズとヘッダ情報のデータサイズが一致しません: #{calc_datasize} != #{datasize}\n")
+		end
+
+		if headersize + datasize != filedata.length
+			$stdout.print("  ヘッダ情報のデータサイズと実際のファイルサイズが一致しません: #{headersize + datasize} != #{filedata.length}\n")
+		end
+
+		offset = headersize
+		(0 ... cyls).each do |cyl|
+			(0 ... heads).each do |head|
+				trkno = cyl * heads + head
+				trk = (@track[trkno] ||= Track.new)
+				(1 .. nsecs).each do |sec|
+					w = Sector.new
+					w.c = cyl # シリンダは0オリジン
+					w.h = head # ヘッドは0オリジン
+					w.r = sec # レコードは1オリジン
+					w.n = (ssize / 128).bit_length - 1
+					w.data = filedata[offset, ssize] || ""
+					offset += ssize
+					trk.sector << w
+				end
+			end
+		end
+
+		excess_data_check(filedata.length, offset)
 	end
 
 	def dump
@@ -954,211 +1159,6 @@ class DCU < DiskImage
 	end
 end
 
-# Anex86(.fdi) ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
-class FDI < DiskImage
-	HEADER_SIZE = 0x20 # コメント除く最小サイズ
-
-	def self.image?(filedata)
-		return false  if filedata.length < HEADER_SIZE
-
-		return filedata[0, 4].to_dword == 0 &&
-			[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
-			filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filedata.length
-	end
-
-	def load(filedata)
-		clear
-
-		fddtype_id = filedata[4, 4].to_dword
-		case fddtype_id
-		when 0x90 # 2HD(1.2MB)
-			@mediatype = :"2hd"
-		when 0x30 # 2HD(1.44MB)
-			@mediatype = :"2hd"
-		when 0x10 # 2DD(640KB or 720KB)
-			@mediatype = :"2dd"
-		else
-			$stdout.print("  メディアタイプ不明: #{fddtype_id.to_hex}\n")
-			@mediatype = :unknown
-		end
-
-		headersize = filedata[0x8, 4].to_dword
-		datasize = filedata[0xc, 4].to_dword
-		ssize, nsecs, heads, cyls = filedata[0x10, 4 * 4].to_dwords
-		$stdout.print("  ヘッダ情報: #{ssize}バイト × #{nsecs}セクタ × #{heads}ヘッド × #{cyls}トラック\n")
-
-		@comment = filedata[0x20, headersize - 0x20].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-
-		calc_datasize = ssize * nsecs * heads * cyls
-		if calc_datasize != datasize
-			$stdout.print("  ヘッダ情報から算出したデータサイズとヘッダ情報のデータサイズが一致しません: #{calc_datasize} != #{datasize}\n")
-		end
-
-		if headersize + datasize != filedata.length
-			$stdout.print("  ヘッダ情報のデータサイズと実際のファイルサイズが一致しません: #{headersize + datasize} != #{filedata.length}\n")
-		end
-
-		offset = headersize
-		(0 ... cyls).each do |cyl|
-			(0 ... heads).each do |head|
-				trkno = cyl * heads + head
-				trk = (@track[trkno] ||= Track.new)
-				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
-					offset += ssize
-					trk.sector << w
-				end
-			end
-		end
-
-		excess_data_check(filedata.length, offset)
-	end
-
-	def dump
-		raise("Not implemented")
-	end
-end
-
-# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
-class DIP < DiskImage
-	HEADER_SIZE = 256
-
-	def self.image?(filedata)
-		return false  if filedata.length < HEADER_SIZE
-
-		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
-			filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
-	end
-
-	def load(filedata)
-		clear
-
-		@comment = filedata[0x10, 0xf0].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-
-		cyls, heads, nsecs, ssize = 77, 2, 8, 1024
-		offset = HEADER_SIZE
-		(0 ... cyls).each do |cyl|
-			(0 ... heads).each do |head|
-				trkno = cyl * heads + head
-				trk = (@track[trkno] ||= Track.new)
-				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
-					offset += ssize
-					trk.sector << w
-				end
-			end
-		end
-
-		excess_data_check(filedata.length, offset)
-	end
-
-	def dump
-		raise("Not implemented")
-	end
-end
-
-# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
-class SLF < DiskImage
-	HEADER_SIZE = 16 + 80 * 2 * 32
-
-	def self.image?(filedata)
-		return false  if filedata.length < HEADER_SIZE
-
-		return filedata[0, 4] == "FDIM" &&
-			filedata[4, 4].to_dword == 0x10000 &&
-			filedata[8, 4].to_dword == filedata.length
-	end
-
-	def load(filedata)
-		clear
-
-		version, filesize, flag = filedata[4, 12].to_dwords
-		$stdout.print("  SLFバージョン: #{version.to_hex}\n")
-
-		if filesize != filedata.length
-			$stdout.print("  ヘッダのファイルサイズと実際のサイズが異なります: #{filesize} != #{filedata.length}\n")
-		end
-
-		if flag != 0
-			$stdout.print("  フラグが設定されています: #{flag.to_hex}\n")
-		end
-
-		cyls, heads = 80, 2
-		(0 ... cyls * heads).each do |trkno|
-			tdata_offset, tdata_size, unformat_size, data_type, nsecs, gap4a_size, sync_size, gap1_size =
-				filedata[0x10 + trkno * 0x20, 28].unpack("V3v2V3")
-
-			case data_type
-			when 0xffff # -1:未フォーマット
-				@track[trkno] = nil
-			when 0 # 物理フォーマットデータ
-				$stdout.print("  物理フォーマットのトラックには対応していません: #{trkno+1}トラック\n")
-				@track[trkno] = nil
-			when 1, 2 # 1:FM/2:MFMフォーマットデータ
-				sheader_offset = tdata_offset
-				trk = (@track[trkno] ||= Track.new)
-				(1 .. nsecs).each do |sec|
-					sdata_offset, status, isync_size, gap2_size, dsync_size, gap3_size,
-						id_crc, data_crc, idam_pattern, id_c, id_h, id_s, id_n, dataam_pattern =
-						filedata[sheader_offset, 32].unpack("V2v6VC4V")
-					sheader_offset += 0x20
-
-					sdata_offset = tdata_offset + sdata_offset
-					ssize = 128 << id_n
-
-					w = Sector.new
-					w.c = id_c # シリンダは0オリジン
-					w.h = id_h # ヘッドは0オリジン
-					w.r = id_s # レコードは1オリジン
-					w.n = id_n
-					w.mfm = (data_type == 2) ? true : false
-					w.data = filedata[sdata_offset, ssize] || ""
-					trk.sector << w
-
-					if (status & 0x1) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): IDAMパターンエラー\n")
-					end
-					if (status & 0x2) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): ID CRCエラー\n")
-					end
-					if (status & 0x4) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATAAMパターンエラー\n")
-					end
-					if (status & 0x8) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATA CRCエラー\n")
-					end
-					if (status & 0x10) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): セクタ構造のエラー\n")
-					end
-					if (status & 0x100) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): Deletedセクタ\n")
-					end
-					if (status & 0x200) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 入れ子セクタ\n")
-					end
-					if (status | 0x31f) != 0x31f # 上記以外のビットが立っていたら
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 不明な値(#{status.to_hex})\n")
-					end
-				end
-			end
-		end
-	end
-
-	def dump
-		raise("Not implemented")
-	end
-end
-
 # XDF(.xdf) べたデータ
 class XDF < DiskImage
 	HEADER_SIZE = 0
@@ -1220,12 +1220,6 @@ def fdimageid(filename)
 	filedata = read_file(filename).freeze
 
 	case
-	# Virtual98(.fdd)
-	when V98FDD.image?(filedata)
-		$stdout.print("  💾 Virtual98形式 [.fdd]\n")
-		image = V98FDD.new(data:filedata)
-		image.report_all
-
 	# DIFC.X(.dim)
 	when DIM.image?(filedata)
 		$stdout.print("  💾 X68000 DIFC.X形式 [.dim]\n")
@@ -1244,22 +1238,16 @@ def fdimageid(filename)
 		image = NFD_R1.new(data:filedata)
 		image.report_all
 
-	# D88(.d88)
-	when D88.image?(filedata)
-		$stdout.print("  💾 D88形式 [.d88 .d98 .88d .98d]\n")
-		image = D88.new(data:filedata)
+	# SL9821(.slf)
+	when SLF.image?(filedata)
+		$stdout.print("  💾 SL9821形式 [.slf]\n")
+		image = SLF.new(data:filedata)
 		image.report_all
 
-	# DCP/DCU(.dcu)
-	when DCU.image?(filedata)
-		$stdout.print("  💾 DCP/DCU形式 [.dcu .dcp]\n")
-		image = DCU.new(data:filedata)
-		image.report_all
-
-	# Anex86(.fdi)
-	when FDI.image?(filedata)
-		$stdout.print("  💾 Anex86形式 [.fdi]\n")
-		image = FDI.new(data:filedata)
+	# Virtual98(.fdd)
+	when V98FDD.image?(filedata)
+		$stdout.print("  💾 Virtual98形式 [.fdd]\n")
+		image = V98FDD.new(data:filedata)
 		image.report_all
 
 	# DIP(.dip)
@@ -1268,10 +1256,22 @@ def fdimageid(filename)
 		image = DIP.new(data:filedata)
 		image.report_all
 
-	# SL9821(.slf)
-	when SLF.image?(filedata)
-		$stdout.print("  💾 SL9821形式 [.slf]\n")
-		image = SLF.new(data:filedata)
+	# D88(.d88)
+	when D88.image?(filedata)
+		$stdout.print("  💾 D88形式 [.d88 .d98 .88d .98d]\n")
+		image = D88.new(data:filedata)
+		image.report_all
+
+	# Anex86(.fdi)
+	when FDI.image?(filedata)
+		$stdout.print("  💾 Anex86形式 [.fdi]\n")
+		image = FDI.new(data:filedata)
+		image.report_all
+
+	# DCP/DCU(.dcu)
+	when DCU.image?(filedata)
+		$stdout.print("  💾 DCP/DCU形式 [.dcu .dcp]\n")
+		image = DCU.new(data:filedata)
 		image.report_all
 
 	# XDF(.xdf)
