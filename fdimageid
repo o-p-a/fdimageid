@@ -511,6 +511,8 @@ class NFD_R0 < DiskImage
 		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
 		byHead = filedata[0x10 + 0x100 + 5].to_byte
 
+		$stdout.print("  ヘッダ部のヘッド数: #{byHead}\n")
+
 		id_offset = 0x120
 		data_offset = dwHeadSize
 		(0 ... 163).each do |trkno|
@@ -565,6 +567,107 @@ class NFD_R1 < DiskImage
 
 	def load(filedata)
 		clear
+
+		@comment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
+		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
+		byHead = filedata[0x10 + 0x100 + 5].to_byte
+		dwTrackHead = filedata[0x10 + 0x100 + 0x10, 4 * 164].to_dwords
+		dwAddInfo = filedata[0x10 + 0x100 + 0x10 + 4 * 164, 4].to_dword
+
+		$stdout.print("  ヘッダ部のヘッド数: #{byHead}\n")
+		$stdout.print("  追加情報ヘッダのアドレスが0以外です: #{dwAddInfo.to_hex}\n")  if dwAddInfo != 0
+
+		data_offset = dwHeadSize
+		dwTrackHead.each.with_index do |track_offset, trkno|
+			next  if track_offset == 0
+
+			nsecs, wDiag = filedata[track_offset, 2 * 2].to_words
+			track_offset += 0x10
+
+			trk = (@track[trkno] ||= Track.new)
+			(0 ... nsecs).each do |sec|
+				w = Sector.new
+				w.c, w.h, w.r, w.n, w.mfm, w.ddam, w.status, w.st0, w.st1, w.st2, byRetry, w.pda =
+					filedata[track_offset, 12].unpack("C12")
+				track_offset += 0x10
+
+				case w.mfm
+				when 0
+					w.mfm = false
+				when 1
+					w.mfm = true
+				else
+					$stdout.print("  flMFMの値が不正: #{w.mfm}\n")
+					w.mfm = nil
+				end
+
+				case w.ddam
+				when 0
+					w.ddam = false
+				when 1
+					w.ddam = true
+				else
+					$stdout.print("  flDDAMの値が不正: #{w.ddam}\n")
+					w.ddam = nil
+				end
+
+				ssize = 128 << w.n
+				if byRetry == 0
+					w.data = filedata[data_offset, ssize] || ""
+					data_offset += ssize
+				else
+					$stdout.print("  リトライデータが存在します: 1+#{byRetry}回\n")
+					w.data = []
+					(0 .. byRetry).each do
+						w.data << (filedata[data_offset, ssize] || "")
+						data_offset += ssize
+					end
+				end
+
+				trk.sector << w
+			end
+
+			(0 ... wDiag).each do
+				d_cmd, d_c, d_h, d_r, d_n, d_byStatus, d_bySTS0, d_bySTS1, d_bySTS2, d_byRetry, d_dwDataLen, d_byPDA =
+					filedata[track_offset, 15].unpack("C10VC")
+				track_offset += 0x10
+				data_offset += d_dwDataLen
+
+				case d_cmd
+				when 0x0
+					d_cmd_s = "Seek"
+				when 0x1
+					d_cmd_s = "Verify"
+				when 0x2
+					d_cmd_s = "Read Diagnostic"
+				when 0x3
+					d_cmd_s = "Initialize"
+				when 0x4
+					d_cmd_s = "Sense"
+				when 0x5
+					d_cmd_s = "Write Data"
+				when 0x6
+					d_cmd_s = "Read Data"
+				when 0x7
+					d_cmd_s = "Recalibrate"
+				when 0x9
+					d_cmd_s = "Write Deleted Data"
+				when 0xa
+					d_cmd_s = "Read ID"
+				when 0xc
+					d_cmd_s = "Read Deleted Data"
+				when 0xd
+					d_cmd_s = "Format Track"
+				when 0xe
+					d_cmd_s = "Set Operation Mode"
+				else
+					d_cmd_s = "不明なコマンド"
+				end
+
+				$stdout.print("  特殊読み込みデータが存在します: #{d_cmd_s} #{d_c}/#{d_h}/#{d_r}/#{d_n}\n")
+			end
+		end
 	end
 
 	def dump
@@ -572,7 +675,7 @@ class NFD_R1 < DiskImage
 	end
 end
 
-# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html
+# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
 class D88 < DiskImage
 	def self.image?(filedata)
 		return filedata[0x10, 10] == "\0" * 10 &&
@@ -587,19 +690,25 @@ class D88 < DiskImage
 		media_flag = filedata[0x1b].to_byte
 		case media_flag
 		when 0x00 # 2D
+			$stdout.print("  ヘッダのメディアタイプ: 2D\n")
 			@mediatype = :"2d"
 		when 0x10 # 2DD
+			$stdout.print("  ヘッダのメディアタイプ: 2DD\n")
 			@mediatype = :"2dd"
 		when 0x20 # 2HD
+			$stdout.print("  ヘッダのメディアタイプ: 2HD\n")
 			@mediatype = :"2hd"
 		when 0x21 # 2HD(1.44MB NP2kai)
+			$stdout.print("  ヘッダのメディアタイプ: 2HD(1.44MB NP2kai拡張)\n")
 			@mediatype = :"2hd"
 		when 0x30 # 1D
+			$stdout.print("  ヘッダのメディアタイプ: 1D\n")
 			@mediatype = :"1d"
 		when 0x40 # 1DD
+			$stdout.print("  ヘッダのメディアタイプ: 1DD\n")
 			@mediatype = :"1dd"
 		else
-			$stdout.print("  メディアタイプ不明: #{media_flag.to_hex}\n")
+			$stdout.print("  ヘッダのメディアタイプ不明: #{media_flag.to_hex}\n")
 			@mediatype = :unknown
 		end
 
@@ -1101,85 +1210,8 @@ def fdimageid(filename)
 	# T98Next R1(.nfd)
 	when NFD_R1.image?(filedata)
 		$stdout.print("  T98-Next NFD r1形式 [.nfd]\n")
-
-		szComment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
-		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
-		flProtect = filedata[0x10 + 0x100 + 4].to_byte
-
-		$stdout.print("  コメント: #{szComment.inspect}\n")  if !szComment.empty?
-		$stdout.print("  ヘッダサイズ: #{dwHeadSize}バイト\n")
-		$stdout.print("  読み取り専用\n")  if flProtect != 0
-
-		trackInfo = []
-		dwTrackHead = filedata[0x10 + 0x100 + 0x10, 4 * 164].to_dwords
-		(0 ... dwTrackHead.length).each do |track|
-			track_offset = dwTrackHead[track]
-			next  if track_offset == 0
-
-			wSector, wDiag = filedata[track_offset, 2 * 2].to_words
-			trackInfo[track] = { sectorInfo:[], diagInfo:[] }
-
-			(0 ... wSector).each do |sector|
-				w = {}
-				w[:c], w[:h], w[:r], w[:n], w[:flMFM], w[:flDDAM], w[:byStatus], w[:bySTS0], w[:bySTS1], w[:bySTS2], w[:byRetry], w[:byPDA] =
-					filedata[track_offset + 0x10 + sector * 0x10, 12].unpack("C12")
-				w[:bySTS0] &= 0xfb # Head Address は無視
-				trackInfo[track][:sectorInfo] << w
-			end
-
-			(0 ... wDiag).each do |diag|
-				w = {}
-				w[:cmd], w[:c], w[:h], w[:r], w[:n], w[:byStatus], w[:bySTS0], w[:bySTS1], w[:bySTS2], w[:byRetry], w[:dwDataLen], w[:byPDA] =
-					filedata[track_offset + 0x10 + wSector * 0x10 + diag * 0x10, 15].unpack("C10VC")
-				trackInfo[track][:diagInfo] << w
-			end
-		end
-
-		minval = {}
-		maxval = {}
-		minnsec = nil
-		maxnsec = nil
-		trackInfo.each do |ti|
-			ti[:sectorInfo].each do |si|
-				[:c, :h, :r, :n, :flMFM, :flDDAM, :byStatus, :bySTS0, :bySTS1, :bySTS2, :byRetry, :byPDA].each do |member|
-					minval[member] = si[member]  if !minval[member] || minval[member] > si[member]
-					maxval[member] = si[member]  if !maxval[member] || maxval[member] < si[member]
-				end
-			end
-			minnsec = ti[:sectorInfo].length  if !minnsec || minnsec > ti[:sectorInfo].length
-			maxnsec = ti[:sectorInfo].length  if !maxnsec || maxnsec < ti[:sectorInfo].length
-
-			ti[:diagInfo].each do |di|
-				$stdout.print("  特殊読み込みセクタ: Cmd:#{di[:cmd]} C:#{di[:c]} H:#{di[:h]} R:#{di[:r]} N:#{di[:n]} STS:#{di[:bySTS0]},#{di[:bySTS1]},#{di[:bySTS2]} Status:#{di[:byStatus]} Retry:#{di[:byRetry]} DataLen:#{di[:dwDataLen]}\n")
-			end
-		end
-
-		ntracks = trackInfo.length
-		ntracks_s = "#{ntracks}トラック"
-
-		sector_size = 128 << maxval[:n]
-		if maxval[:n] == minval[:n]
-			sector_size_s = "#{sector_size}バイト"
-		else
-			sector_size_s = "#{sector_size}バイト(混在あり)"
-		end
-
-		nsectors = maxnsec
-		if maxnsec == minnsec
-			nsectors_s = "#{nsectors}セクタ"
-		else
-			nsectors_s = "#{nsectors}セクタ(混在あり)"
-		end
-
-		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{ntracks_s}\n")
-		$stdout.print("  FM/MFM混在\n")  if maxval[:flMFM] != minval[:flMFM]
-		$stdout.print("  Deleted Data Address Markの立ったセクタがあります\n")  if maxval[:flDDAM] != 0
-		$stdout.print("  BIOS Resultが0以外のセクタがあります\n")  if maxval[:byStatus] != 0
-		$stdout.print("  FDC Store Status 0が0以外のセクタがあります\n")  if maxval[:bySTS0] != 0
-		$stdout.print("  FDC Store Status 1が0以外のセクタがあります\n")  if maxval[:bySTS1] != 0
-		$stdout.print("  FDC Store Status 2が0以外のセクタがあります\n")  if maxval[:bySTS2] != 0
-		$stdout.print("  不安定データセクタがあります\n")  if maxval[:byRetry] != 0
-		$stdout.print("  PDAデバイスアドレスが0以外のセクタがあります\n")  if maxval[:byPDA] != 0
+		image = NFD_R1.new(data:filedata)
+		image.report_all
 
 	# D88(.d88)
 	when D88.image?(filedata)
