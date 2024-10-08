@@ -58,6 +58,7 @@ class DiskImage
 		@track = []
 		@writeprotect = nil # true:Write Protected false:Writeable
 		@comment = nil
+		return self
 	end
 
 	def to_h
@@ -78,6 +79,7 @@ class DiskImage
 
 		def clear
 			@sector = []
+			return self
 		end
 
 		def to_h
@@ -120,6 +122,7 @@ class DiskImage
 			@st1 = nil		# ST1
 			@st2 = nil		# ST2
 			@pda = nil		# PDA 0x90:1.2M 0x30:1.44M 0x10:640K
+			return self
 		end
 
 		def to_h
@@ -181,9 +184,15 @@ class DiskImage
 			$stdout.print("  読み込み中に末尾に達しました(#{-excess_data_length}バイト不足)\n")
 		end
 	end
+	protected(:excess_data_check)
 
 	# 情報を表示
 	def report_all
+		if empty?
+			$stdout.print("  データがありません(初期状態)\n")
+			return
+		end
+
 		if @comment && !@comment.empty?
 			$stdout.print("  コメント: #{@comment.inspect}\n")
 		end
