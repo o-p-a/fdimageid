@@ -236,30 +236,62 @@ class DiskImage
 		mfm_count = {}
 		ddam_count = 0
 		status_count = {}
-		@track.each do |trk|
+		@track.each.with_index do |trk, trkno|
 			next  if !trk
 
 			nsec = trk.nsectors
 			nsectors[nsec] ||= 0
 			nsectors[nsec] += 1
 
-			trk.sector.each do |sec|
-				ssize = sec.data.length
+			sector_count = []
+			trk.sector.each.with_index do |s, sec|
+				if s.c != trkno / 2
+					$stdout.print("  トラック#{trkno+1}のセクタのC値が特殊です: #{s.c} != #{trkno / 2}\n")
+				end
+
+				if s.h != trkno % 2
+					$stdout.print("  トラック#{trkno+1}のセクタのH値が特殊です: #{s.h} != #{trkno % 2}\n")
+				end
+
+				# インターリーブしてると普通に異なるのでコメントアウト
+				# if s.r != sec + 1
+				# 	$stdout.print("  トラック#{trkno+1}のセクタのR値が特殊です: #{s.r} != #{sec+1}\n")
+				# end
+
+				sector_count[s.r] ||= 0
+				sector_count[s.r] += 1
+
+				ssize = s.data.length
 				sector_size[ssize] ||= 0
 				sector_size[ssize] += 1
 
-				if !sec.mfm.nil?
-					mfm_count[sec.mfm] ||= 0
-					mfm_count[sec.mfm] += 1
+				if !s.mfm.nil?
+					mfm_count[s.mfm] ||= 0
+					mfm_count[s.mfm] += 1
 				end
 
-				if sec.ddam == true
+				if s.ddam == true
 					ddam_count += 1
 				end
 
-				if !sec.status.nil? && sec.status != 0
-					status_count[sec.status] ||= 0
-					status_count[sec.status] += 1
+				if !s.status.nil? && s.status != 0
+					status_count[s.status] ||= 0
+					status_count[s.status] += 1
+				end
+			end
+
+			sector_count.each.with_index do |count, sec|
+				count ||= 0
+				if sec == 0
+					if count > 0
+						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタがあります\n")
+					end
+				else
+					if count < 1
+						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタがありません\n")
+					elsif count > 1
+						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタが複数あります\n")
+					end
 				end
 			end
 		end
@@ -431,14 +463,14 @@ class DIM < DiskImage
 
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
+					s = Sector.new
+					s.c = cyl # シリンダは0オリジン
+					s.h = head # ヘッドは0オリジン
+					s.r = sec # レコードは1オリジン
+					s.n = (ssize / 128).bit_length - 1
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << w
+					trk.sector << s
 				end
 			end
 		end
@@ -475,44 +507,44 @@ class NFD_R0 < DiskImage
 		data_offset = dwHeadSize
 		(0 ... 163).each do |trkno|
 			(0 ... 26).each do |sec|
-				w = Sector.new
-				w.c, w.h, w.r, w.n, w.mfm, w.ddam, w.status, w.st0, w.st1, w.st2, w.pda =
+				s = Sector.new
+				s.c, s.h, s.r, s.n, s.mfm, s.ddam, s.status, s.st0, s.st1, s.st2, s.pda =
 					filedata[id_offset, 11].unpack("C11")
 				id_offset += 0x10
 
-				next  if w.c == 0xff
+				next  if s.c == 0xff
 
-				if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
-					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c}/#{w.h}/#{w.r}/#{w.n}\n")
-					next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
+					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c}/#{s.h}/#{s.r}/#{s.n}\n")
+					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
 				end
 
-				case w.mfm
+				case s.mfm
 				when 0
-					w.mfm = false
+					s.mfm = false
 				when 1
-					w.mfm = true
+					s.mfm = true
 				else
-					$stdout.print("  flMFMの値が不正: #{w.mfm}\n")
-					w.mfm = nil
+					$stdout.print("  flMFMの値が不正: #{s.mfm}\n")
+					s.mfm = nil
 				end
 
-				case w.ddam
+				case s.ddam
 				when 0
-					w.ddam = false
+					s.ddam = false
 				when 1
-					w.ddam = true
+					s.ddam = true
 				else
-					$stdout.print("  flDDAMの値が不正: #{w.ddam}\n")
-					w.ddam = nil
+					$stdout.print("  flDDAMの値が不正: #{s.ddam}\n")
+					s.ddam = nil
 				end
 
-				ssize = 128 << w.n
-				w.data = filedata[data_offset, ssize] || ""
+				ssize = 128 << s.n
+				s.data = filedata[data_offset, ssize] || ""
 				data_offset += ssize
 
 				trk = (@track[trkno] ||= Track.new)
-				trk.sector << w
+				trk.sector << s
 			end
 		end
 
@@ -548,6 +580,7 @@ class NFD_R1 < DiskImage
 		$stdout.print("  追加情報ヘッダのアドレスが0以外です: #{dwAddInfo.to_hex}\n")  if dwAddInfo != 0
 
 		data_offset = dwHeadSize
+		sp_read_count = {}
 		dwTrackHead.each.with_index do |track_offset, trkno|
 			next  if track_offset == 0
 
@@ -556,50 +589,50 @@ class NFD_R1 < DiskImage
 
 			trk = (@track[trkno] ||= Track.new)
 			(0 ... nsecs).each do |sec|
-				w = Sector.new
-				w.c, w.h, w.r, w.n, w.mfm, w.ddam, w.status, w.st0, w.st1, w.st2, byRetry, w.pda =
+				s = Sector.new
+				s.c, s.h, s.r, s.n, s.mfm, s.ddam, s.status, s.st0, s.st1, s.st2, byRetry, s.pda =
 					filedata[track_offset, 12].unpack("C12")
 				track_offset += 0x10
 
-				if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
-					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c}/#{w.h}/#{w.r}/#{w.n}\n")
-					next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
+					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c}/#{s.h}/#{s.r}/#{s.n}\n")
+					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
 				end
 
-				case w.mfm
+				case s.mfm
 				when 0
-					w.mfm = false
+					s.mfm = false
 				when 1
-					w.mfm = true
+					s.mfm = true
 				else
-					$stdout.print("  flMFMの値が不正: #{w.mfm}\n")
-					w.mfm = nil
+					$stdout.print("  flMFMの値が不正: #{s.mfm}\n")
+					s.mfm = nil
 				end
 
-				case w.ddam
+				case s.ddam
 				when 0
-					w.ddam = false
+					s.ddam = false
 				when 1
-					w.ddam = true
+					s.ddam = true
 				else
-					$stdout.print("  flDDAMの値が不正: #{w.ddam}\n")
-					w.ddam = nil
+					$stdout.print("  flDDAMの値が不正: #{s.ddam}\n")
+					s.ddam = nil
 				end
 
-				ssize = 128 << w.n
+				ssize = 128 << s.n
 				if byRetry == 0
-					w.data = filedata[data_offset, ssize] || ""
+					s.data = filedata[data_offset, ssize] || ""
 					data_offset += ssize
 				else
 					$stdout.print("  リトライデータが存在します: 1+#{byRetry}回\n")
-					w.data = []
+					s.data = []
 					(0 .. byRetry).each do
-						w.data << (filedata[data_offset, ssize] || "")
+						s.data << (filedata[data_offset, ssize] || "")
 						data_offset += ssize
 					end
 				end
 
-				trk.sector << w
+				trk.sector << s
 			end
 
 			(0 ... wDiag).each do
@@ -608,39 +641,45 @@ class NFD_R1 < DiskImage
 				track_offset += 0x10
 				data_offset += d_dwDataLen
 
-				case d_cmd
-				when 0x0
-					d_cmd_s = "Seek"
-				when 0x1
-					d_cmd_s = "Verify"
-				when 0x2
-					d_cmd_s = "Read Diagnostic"
-				when 0x3
-					d_cmd_s = "Initialize"
-				when 0x4
-					d_cmd_s = "Sense"
-				when 0x5
-					d_cmd_s = "Write Data"
-				when 0x6
-					d_cmd_s = "Read Data"
-				when 0x7
-					d_cmd_s = "Recalibrate"
-				when 0x9
-					d_cmd_s = "Write Deleted Data"
-				when 0xa
-					d_cmd_s = "Read ID"
-				when 0xc
-					d_cmd_s = "Read Deleted Data"
-				when 0xd
-					d_cmd_s = "Format Track"
-				when 0xe
-					d_cmd_s = "Set Operation Mode"
-				else
-					d_cmd_s = "不明なコマンド"
-				end
-
-				$stdout.print("  特殊読み込みデータが存在します: #{d_cmd_s} #{d_c}/#{d_h}/#{d_r}/#{d_n}\n")
+				sp_read_count[d_cmd] ||= 0
+				sp_read_count[d_cmd] += 1
 			end
+		end
+
+		sp_read_count = sp_read_count.to_a.sort_by{ |e| e[1] }.reverse
+		sp_read_count.each do |cmd, count|
+			case cmd
+			when 0x0
+				cmd_s = "Seek"
+			when 0x1
+				cmd_s = "Verify"
+			when 0x2
+				cmd_s = "Read Diagnostic"
+			when 0x3
+				cmd_s = "Initialize"
+			when 0x4
+				cmd_s = "Sense"
+			when 0x5
+				cmd_s = "Write Data"
+			when 0x6
+				cmd_s = "Read Data"
+			when 0x7
+				cmd_s = "Recalibrate"
+			when 0x9
+				cmd_s = "Write Deleted Data"
+			when 0xa
+				cmd_s = "Read ID"
+			when 0xc
+				cmd_s = "Read Deleted Data"
+			when 0xd
+				cmd_s = "Format Track"
+			when 0xe
+				cmd_s = "Set Operation Mode"
+			else
+				cmd_s = "不明なコマンド"
+			end
+
+			$stdout.print("  特殊読み込みデータが存在します: #{cmd_s}: #{count}個\n")
 		end
 
 		excess_data_check(filedata.length, data_offset)
@@ -692,22 +731,22 @@ class SLF < DiskImage
 				sheader_offset = tdata_offset
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
+					s = Sector.new
 					sdata_offset, status, isync_size, gap2_size, dsync_size, gap3_size,
-						id_crc, data_crc, idam_pattern, w.c, w.h, w.r, w.n, dataam_pattern =
+						id_crc, data_crc, idam_pattern, s.c, s.h, s.r, s.n, dataam_pattern =
 						filedata[sheader_offset, 32].unpack("V2v6VC4V")
 					sheader_offset += 0x20
 
-					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
-						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
-						next  if w.n > 6 # 致命的なのでこのセクタはスキップ
+					if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
+						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
+						next  if s.n > 6 # 致命的なのでこのセクタはスキップ
 					end
 
 					sdata_offset = tdata_offset + sdata_offset
-					ssize = 128 << w.n
-					w.mfm = (data_type == 2) ? true : false
-					w.data = filedata[sdata_offset, ssize] || ""
-					trk.sector << w
+					ssize = 128 << s.n
+					s.mfm = (data_type == 2) ? true : false
+					s.data = filedata[sdata_offset, ssize] || ""
+					trk.sector << s
 
 					if (status & 0x1) != 0
 						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): IDAMパターンエラー\n")
@@ -762,31 +801,51 @@ class V98FDD < DiskImage
 		special_read_drive = filedata[0x8a, 2].to_word
 
 		cyls, heads = 80, 2
-		sector_map = []
-		(0 ... 26 * heads * cyls).each do |nthsec|
-			cyl, head, sec, ssize_n, fill_byte, ddam, mf, hd, sector_offset =
-				filedata[0xdc + 12 * nthsec, 12].unpack("C4aC3V")
+		offset = 0xdc
+		(0 ... heads * cyls).each do |trkno|
+			(0 ... 26).each do
+				s = Sector.new
+				s.c, s.h, s.r, s.n, fill_byte, s.ddam, s.mfm, hd, sector_offset =
+					filedata[offset, 12].unpack("C4aC3V")
+				offset += 12
 
-			next  if cyl == 0xff
+				next  if s.c == 0xff
 
-			trkno = cyl * heads + head
-			ssize = 128 << ssize_n
+				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
+					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
+					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
+				end
 
-			trk = (@track[trkno] ||= Track.new)
+				case s.ddam
+				when 0
+					s.ddam = false
+				when 1
+					s.ddam = true
+				else
+					$stdout.print("  DDAMの値が不正: #{s.ddam}\n")
+					s.ddam = nil
+				end
 
-			w = Sector.new
-			w.c = cyl # シリンダは0オリジン
-			w.h = head # ヘッドは0オリジン
-			w.r = sec # レコードは1オリジン
-			w.n = ssize_n
-			w.mfm = (mf != 0) ? true : false
-			w.ddam = (ddam != 0) ? true : false
-			w.data = (sector_offset == 0xffffffff) ? fill_byte * ssize : filedata[sector_offset, ssize]
-			trk.sector << w
+				case s.mfm
+				when 0
+					s.mfm = false
+				when 1
+					s.mfm = true
+				else
+					$stdout.print("  MFの値が不正: #{s.mfm}\n")
+					s.mfm = nil
+				end
 
-			if hd != 1
-				$stdout.print("  2HDフラグが1でないセクタがあります: #{hd}\n")
-				@mediatype = nil
+				if hd != 1
+					$stdout.print("  2HDフラグが1でないセクタがあります: #{hd}\n")
+					@mediatype = nil
+				end
+
+				ssize = 128 << s.n
+				s.data = (sector_offset == 0xffffffff) ? fill_byte * ssize : filedata[sector_offset, ssize]
+
+				trk = (@track[trkno] ||= Track.new)
+				trk.sector << s
 			end
 		end
 
@@ -848,14 +907,14 @@ class DIP < DiskImage
 				trkno = cyl * heads + head
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
+					s = Sector.new
+					s.c = cyl # シリンダは0オリジン
+					s.h = head # ヘッドは0オリジン
+					s.r = sec # レコードは1オリジン
+					s.n = (ssize / 128).bit_length - 1
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << w
+					trk.sector << s
 				end
 			end
 		end
@@ -924,44 +983,44 @@ class D88 < DiskImage
 
 				track_nsectors = nil
 				begin
-					w = Sector.new
-					w.c, w.h, w.r, w.n, nsectors, w.mfm, w.ddam, w.status, rpm, datasize =
+					s = Sector.new
+					s.c, s.h, s.r, s.n, nsecs, s.mfm, s.ddam, s.status, rpm, datasize =
 						filedata[offset, 16].unpack("C4vC3x4Cv")
 					offset += 0x10
 
-					if w.c > 90 || w.h > 1 || w.r > 32 || w.n > 6
-						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{w.c} #{w.h} #{w.r} #{w.n}\n")
-						break  if w.n > 6 # 致命的なのでこのトラックはスキップ
+					if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
+						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
+						break  if s.n > 6 # 致命的なのでこのトラックはスキップ
 					end
 
-					if nsectors > 32
-						$stdout.print("  トラック#{trkno+1}のセクタ数不正: #{nsectors}\n")
+					if nsecs > 32
+						$stdout.print("  トラック#{trkno+1}のセクタ数不正: #{nsecs}\n")
 					end
 
 					if !track_nsectors
-						track_nsectors = nsectors
-					elsif track_nsectors != nsectors
-						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsectors}\n")
+						track_nsectors = nsecs
+					elsif track_nsectors != nsecs
+						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsecs}\n")
 					end
 
-					case w.mfm
+					case s.mfm
 					when 0x00 # double density
-						w.mfm = true
+						s.mfm = true
 					when 0x40 # single density
-						w.mfm = false
+						s.mfm = false
 					else
-						$stdout.print("  トラック#{trkno+1}のDensity flag不正: #{w.mfm.to_hex}\n")
-						w.mfm = nil
+						$stdout.print("  トラック#{trkno+1}のDensity flag不正: #{s.mfm.to_hex}\n")
+						s.mfm = nil
 					end
 
-					case w.ddam
+					case s.ddam
 					when 0x00 # normal
-						w.ddam = false
+						s.ddam = false
 					when 0x10 #deleted
-						w.ddam = true
+						s.ddam = true
 					else
-						$stdout.print("  トラック#{trkno+1}のDDAM flag不正: #{w.ddam.to_hex}\n")
-						w.ddam = nil
+						$stdout.print("  トラック#{trkno+1}のDDAM flag不正: #{s.ddam.to_hex}\n")
+						s.ddam = nil
 					end
 
 					if rpm == 0 || rpm == 1
@@ -970,16 +1029,16 @@ class D88 < DiskImage
 						$stdout.print("  トラック#{trkno+1}のNP2kai RPM不正: #{rpm}\n")
 					end
 
-					ssize = 128 << w.n
+					ssize = 128 << s.n
 					if ssize != datasize
 						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{ssize} != #{datasize}\n")
 					end
 
-					w.data = filedata[offset, ssize] || ""
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
 
-					trk.sector << w
-				end while trk.sector.length < nsectors
+					trk.sector << s
+				end while trk.sector.length < nsecs
 
 				next_track_start = (track_offsets[(trkno + 1) .. -1].find { |o| o != 0 }) || filedata.length
 				if offset != next_track_start
@@ -1048,14 +1107,14 @@ class FDI < DiskImage
 				trkno = cyl * heads + head
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
+					s = Sector.new
+					s.c = cyl # シリンダは0オリジン
+					s.h = head # ヘッドは0オリジン
+					s.r = sec # レコードは1オリジン
+					s.n = (ssize / 128).bit_length - 1
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << w
+					trk.sector << s
 				end
 			end
 		end
@@ -1181,14 +1240,14 @@ class DCU < DiskImage
 
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
+					s = Sector.new
+					s.c = cyl # シリンダは0オリジン
+					s.h = head # ヘッドは0オリジン
+					s.r = sec # レコードは1オリジン
+					s.n = (ssize / 128).bit_length - 1
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << w
+					trk.sector << s
 				end
 			end
 		end
@@ -1237,14 +1296,14 @@ class XDF < DiskImage
 				trkno = cyl * heads + head
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
-					w = Sector.new
-					w.c = cyl # シリンダは0オリジン
-					w.h = head # ヘッドは0オリジン
-					w.r = sec # レコードは1オリジン
-					w.n = (ssize / 128).bit_length - 1
-					w.data = filedata[offset, ssize] || ""
+					s = Sector.new
+					s.c = cyl # シリンダは0オリジン
+					s.h = head # ヘッドは0オリジン
+					s.r = sec # レコードは1オリジン
+					s.n = (ssize / 128).bit_length - 1
+					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << w
+					trk.sector << s
 				end
 			end
 		end
