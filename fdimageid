@@ -690,9 +690,9 @@ class NFD_R1 < DiskImage
 	end
 end
 
-# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(80*2*32=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
 class SLF < DiskImage
-	HEADER_SIZE = 16 + 80 * 2 * 32
+	HEADER_SIZE = 16 + 32 * 80 * 2
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
@@ -719,7 +719,7 @@ class SLF < DiskImage
 		cyls, heads = 80, 2
 		(0 ... cyls * heads).each do |trkno|
 			tdata_offset, tdata_size, unformat_size, data_type, nsecs, gap4a_size, sync_size, gap1_size =
-				filedata[0x10 + trkno * 0x20, 28].unpack("V3v2V3")
+				filedata[0x10 + 0x20 * trkno, 28].unpack("V3v2V3")
 
 			case data_type
 			when 0xffff # -1:未フォーマット
@@ -802,7 +802,7 @@ class V98FDD < DiskImage
 
 		cyls, heads = 80, 2
 		offset = 0xdc
-		(0 ... heads * cyls).each do |trkno|
+		(0 ... cyls * heads).each do |trkno|
 			(0 ... 26).each do
 				s = Sector.new
 				s.c, s.h, s.r, s.n, fill_byte, s.ddam, s.mfm, hd, sector_offset =
@@ -892,7 +892,7 @@ class DIP < DiskImage
 		return false  if filedata.length < HEADER_SIZE
 
 		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
-			filedata.length == HEADER_SIZE + (1024 * 8 * 2 * 77)
+			filedata.length == HEADER_SIZE + (77 * 2 * 8 * 1024)
 	end
 
 	def load(filedata)
@@ -1092,7 +1092,7 @@ class FDI < DiskImage
 
 		@comment = filedata[0x20, headersize - 0x20].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
 
-		calc_datasize = ssize * nsecs * heads * cyls
+		calc_datasize = cyls * heads * nsecs * ssize
 		if calc_datasize != datasize
 			$stdout.print("  ヘッダ情報から算出したデータサイズとヘッダ情報のデータサイズが一致しません: #{calc_datasize} != #{datasize}\n")
 		end
@@ -1143,23 +1143,23 @@ class DCU < DiskImage
 
 		media_type = filedata[0].to_byte
 		case [media_type, filedata.length]
-		when [0x01, HEADER_SIZE + (1024 * 8 * 2 * 77)] # 2HD(1.25MB 2HS)
+		when [0x01, HEADER_SIZE + (77 * 2 * 8 * 1024)] # 2HD(1.25MB 2HS)
 			return true
-		when [0x02, HEADER_SIZE + (512 * 15 * 2 * 80)] # 2HD(1.21MB 2HC)
+		when [0x02, HEADER_SIZE + (80 * 2 * 15 * 512)] # 2HD(1.21MB 2HC)
 			return true
-		when [0x03, HEADER_SIZE + (512 * 18 * 2 * 80)] # 2HQ(1.44MB 2HDE)
+		when [0x03, HEADER_SIZE + (80 * 2 * 18 * 512)] # 2HQ(1.44MB 2HDE)
 			return true
-		when [0x04, HEADER_SIZE + (512 * 8 * 2 * 80)] # 2DD(640KB)
+		when [0x04, HEADER_SIZE + (80 * 2 * 8 * 512)] # 2DD(640KB)
 			return true
-		when [0x05, HEADER_SIZE + (512 * 9 * 2 * 80)] # 2DD(720KB)
+		when [0x05, HEADER_SIZE + (80 * 2 * 9 * 512)] # 2DD(720KB)
 			return true
-		when [0x08, HEADER_SIZE + (1024 * 9 * 2 * 80)] # 2HD(1.44MB)
+		when [0x08, HEADER_SIZE + (80 * 2 * 9 * 1024)] # 2HD(1.44MB)
 			return true
-		when [0x11, HEADER_SIZE + (128*26 + 256*26*153)] # 2HD(Disk BASIC)
+		when [0x11, HEADER_SIZE + (1*26*128 + 153*26*256)] # 2HD(Disk BASIC)
 			return true
-		when [0x19, HEADER_SIZE + (256 * 16 * 2 * 80)] # 2DD(Disk BASIC)
+		when [0x19, HEADER_SIZE + (80 * 2 * 16 * 256)] # 2DD(Disk BASIC)
 			return true
-		when [0x21, HEADER_SIZE + (256 * 26 * 2 * 80)] # 2HD(26sector)
+		when [0x21, HEADER_SIZE + (80 * 2 * 26 * 256)] # 2HD(26sector)
 			return true
 		end
 
@@ -1384,19 +1384,19 @@ def fdimageid(filename)
 	# XDF(.xdf)
 	when XDF.image?(filedata)
 		case filedata.length
-		when 512 * 18 * 2 * 80 # 1.44MB 2HD
+		when 80 * 2 * 18 * 512 # 1.44MB 2HD
 			$stdout.print("  💾 べたイメージ 2HD(1.44MB PC/AT) [.2hd]\n")
-		when 1024 * 8 * 2 * 77 # 1.23MB 2HD
+		when 77 * 2 * 8 * 1024 # 1.23MB 2HD
 			$stdout.print("  💾 べたイメージ 2HD(1.23MB PC98) [.xdf .2hd .dup .hdm .tfd]\n")
-		when 512 * 15 * 2 * 80 # 1.2MB 2HD
+		when 80 * 2 * 15 * 512 # 1.2MB 2HD
 			$stdout.print("  💾 べたイメージ 2HD(1.2MB PC/AT) [.2hd]\n")
-		when 512 * 9 * 2 * 80 # 720KB 2DD
+		when 80 * 2 * 9 * 512 # 720KB 2DD
 			$stdout.print("  💾 べたイメージ 2DD(720KB MSX) [.dsk]\n")
-		when 512 * 8 * 2 * 80 # 640KB 2DD
+		when 80 * 2 * 8 * 512 # 640KB 2DD
 			$stdout.print("  💾 べたイメージ 2DD(640KB) [.2dd]\n")
-		when 512 * 8 * 2 * 40 # 320KB 2D
+		when 40 * 2 * 8 * 512 # 320KB 2D
 			$stdout.print("  💾 べたイメージ 2D(320KB) [.2d]\n")
-		when 512 * 8 * 1 * 40 # 160KB 1D
+		when 40 * 1 * 8 * 512 # 160KB 1D
 			$stdout.print("  💾 べたイメージ 1D(160KB) [.1d]\n")
 		else
 			$stdout.print("  💾 べたイメージ [.xdf]\n")
@@ -1422,14 +1422,14 @@ def strip_dim(filename)
 	end
 
 	case filedata.length
-	when 256 + 1024 * 8 * 2 * 77 # 1261824
-		data = filedata[256, 1024 * 8 * 2 * 77]
+	when 256 + 77 * 2 * 8 * 1024 # 1261824
+		data = filedata[256, 77 * 2 * 8 * 1024]
 
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
-	when 256 + 1024 * 8 * 2 * 80 # 1310976
-		data = filedata[256, 1024 * 8 * 2 * 77]
-		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (80 - 77)]
+	when 256 + 80 * 2 * 8 * 1024 # 1310976
+		data = filedata[256, 77 * 2 * 8 * 1024]
+		data2 = filedata[256 + 77 * 2 * 8 * 1024, (80 - 77) * 2 * 8 * 1024]
 		if data2 != data2[0] * data2.length
 			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
 			return
@@ -1437,9 +1437,9 @@ def strip_dim(filename)
 
 		$stdout.print("  → #{outfilename}:\n")
 		write_file(outfilename, data)
-	when 256 + 1024 * 8 * 2 * 85 # 1392896
-		data = filedata[256, 1024 * 8 * 2 * 77]
-		data2 = filedata[256 + 1024 * 8 * 2 * 77, 1024 * 8 * 2 * (85 - 77)]
+	when 256 + 85 * 2 * 8 * 1024 # 1392896
+		data = filedata[256, 77 * 2 * 8 * 1024]
+		data2 = filedata[256 + 77 * 2 * 8 * 1024, (85 - 77) * 2 * 8 * 1024]
 		if data2 != data2[0] * data2.length
 			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
 			return
@@ -1457,10 +1457,10 @@ def truncate_9(filename)
 	$stdout.print("#{filename}:\n")
 	filedata = read_file(filename).freeze
 
-	if filedata.length == 512 * 9 * 2 * 80
+	if filedata.length == 80 * 2 * 9 * 512
 		outdata = ""
-		(0 ... 2 * 80).each do |track|
-			outdata += filedata[512 * 9 * track, 512 * 8]
+		(0 ... 80 * 2).each do |track|
+			outdata += filedata[track * 9 * 512, 8 * 512]
 		end
 
 		outfilename = filename + ".xdf"
