@@ -102,7 +102,7 @@ class DiskImage
 	end
 
 	class Sector
-		attr_accessor(:data, :c, :h, :r, :n, :mfm, :ddam, :cmd, :status, :st0, :st1, :st2, :pda)
+		attr_accessor(:data, :c, :h, :r, :n, :mfm, :ddam, :status, :st0, :st1, :st2, :pda)
 
 		def initialize
 			clear
@@ -116,7 +116,6 @@ class DiskImage
 			@n = nil
 			@mfm = nil		# false:FM(S) true:MFM(D,H)
 			@ddam = nil		# false:DAM true:DDAM
-			@cmd = nil		# BIOS Read Data Command
 			@status = nil	# BIOS Read Data Status 0:Normal Terminate
 			@st0 = nil		# ST0
 			@st1 = nil		# ST1
@@ -134,7 +133,6 @@ class DiskImage
 				n: @n,
 				mfm: @mfm,
 				ddam: @ddam,
-				cmd: @cmd,
 				status: @status,
 				st0: @st0,
 				st1: @st1,
@@ -231,114 +229,142 @@ class DiskImage
 			end
 		end
 
-		nsectors = {}
-		sector_size = {}
+		nsecs_count = {}
+		ssize_count = {}
 		mfm_count = {}
 		ddam_count = 0
 		status_count = {}
+		st0_count = {}
+		st1_count = {}
+		st2_count = {}
+		pda_count = {}
 		@track.each.with_index do |trk, trkno|
 			next  if !trk
 
-			nsec = trk.nsectors
-			nsectors[nsec] ||= 0
-			nsectors[nsec] += 1
+			nsecs = trk.nsectors
+			nsecs_count[nsecs] ||= 0
+			nsecs_count[nsecs] += 1
 
 			sector_count = []
 			trk.sector.each.with_index do |s, sec|
 				if s.c != trkno / 2
-					$stdout.print("  トラック#{trkno+1}のセクタのC値が特殊です: #{s.c} != #{trkno / 2}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのCの値が特殊です: #{s.c} != #{trkno / 2}\n")
 				end
 
 				if s.h != trkno % 2
-					$stdout.print("  トラック#{trkno+1}のセクタのH値が特殊です: #{s.h} != #{trkno % 2}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのHの値が特殊です: #{s.h} != #{trkno % 2}\n")
 				end
 
-				# インターリーブしてると普通に異なるのでコメントアウト
+				# インターリーブしてるディスクでは普通に異なるのでコメントアウト
 				# if s.r != sec + 1
-				# 	$stdout.print("  トラック#{trkno+1}のセクタのR値が特殊です: #{s.r} != #{sec+1}\n")
+				# 	$stdout.print("  トラック#{trkno+1}のセクタのRの値が特殊です: #{s.r} != #{sec+1}\n")
 				# end
 
 				sector_count[s.r] ||= 0
 				sector_count[s.r] += 1
 
 				ssize = s.data.length
-				sector_size[ssize] ||= 0
-				sector_size[ssize] += 1
+				ssize_count[ssize] ||= 0
+				ssize_count[ssize] += 1
 
 				if !s.mfm.nil?
 					mfm_count[s.mfm] ||= 0
 					mfm_count[s.mfm] += 1
 				end
 
-				if s.ddam == true
+				if s.ddam == true # DDAMはtrueの数を数えるだけ
 					ddam_count += 1
 				end
 
-				if !s.status.nil? && s.status != 0
+				if s.status && s.status != 0
 					status_count[s.status] ||= 0
 					status_count[s.status] += 1
 				end
+
+				if s.st0
+					st0 = s.st0 & 0xf8 # Head Address, Unit Select は無視
+					if st0 != 0
+						st0_count[st0] ||= 0
+						st0_count[st0] += 1
+					end
+				end
+
+				if s.st1 && s.st1 != 0
+					st1_count[s.st1] ||= 0
+					st1_count[s.st1] += 1
+				end
+
+				if s.st2 && s.st2 != 0
+					st2_count[s.st2] ||= 0
+					st2_count[s.st2] += 1
+				end
+
+				if s.pda
+					pda_count[s.pda] ||= 0
+					pda_count[s.pda] += 1
+				end
 			end
 
+			# セクタ番号のヌケ・重複のチェック
 			sector_count.each.with_index do |count, sec|
 				count ||= 0
 				if sec == 0
 					if count > 0
-						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタがあります\n")
+						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタがあります\n")
 					end
 				else
 					if count < 1
-						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタがありません\n")
+						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタがありません\n")
 					elsif count > 1
-						$stdout.print("  トラック#{trkno+1}にR値が#{sec}のセクタが複数あります\n")
+						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタが複数あります\n")
 					end
 				end
 			end
 		end
 
-		sector_size = sector_size.to_a.sort_by{ |e| e[1] }.reverse
-		if !sector_size.empty?
-			sector_size_s = "#{sector_size[0][0]}バイト"
-			if sector_size.length >= 2
-				sector_size_s += "(混在あり)"
+		nsecs_count = nsecs_count.to_a.sort_by{ |e| e[1] }.reverse
+		if !nsecs_count.empty?
+			nsecs_s = "#{nsecs_count[0][0]}セクタ"
+			if nsecs_count.length >= 2
+				nsecs_s += "(混在あり)"
+			end
+		else
+			nsecs_s = "0セクタ"
+		end
+
+		ssize_count = ssize_count.to_a.sort_by{ |e| e[1] }.reverse
+		if !ssize_count.empty?
+			ssize_s = "#{ssize_count[0][0]}バイト"
+			if ssize_count.length >= 2
+				ssize_s += "(混在あり)"
 			end
 		else
 			sector_size_s = "0バイト"
 		end
 
-		nsectors = nsectors.to_a.sort_by{ |e| e[1] }.reverse
-		if !nsectors.empty?
-			nsectors_s = "#{nsectors[0][0]}セクタ"
-			if nsectors.length >= 2
-				nsectors_s += "(混在あり)"
-			end
-		else
-			nsectors_s = "0セクタ"
-		end
-
-		if @mediatype == :"2hd" && !sector_size.empty? && !nsectors.empty?
-			if (sector_size[0][0] == 1024 && nsectors[0][0] == 8) ||
-				(sector_size.length >= 2 && sector_size[0][0] == 256 && sector_size[1][0] == 128 && nsectors[0][0] == 26)
+		if @mediatype == :"2hd" && !ssize_count.empty? && !nsecs_count.empty?
+			if (ssize_count[0][0] == 1024 && nsecs_count[0][0] == 8) ||
+				(ssize_count.length >= 2 && ssize_count[0][0] == 256 && ssize_count[1][0] == 128 && nsecs_count[0][0] == 26)
 
 				ntracks_std = 77 * 2
 			end
 		end
 
 		if(ntracks == xtracks)
-			tracks_s = "#{ntracks}トラック"
+			ntracks_s = "#{ntracks}トラック"
 		else
-			tracks_s = "#{ntracks}(#{xtracks})トラック"
+			ntracks_s = "#{ntracks}(#{xtracks})トラック"
 		end
 
 		if ntracks_std
 			if ntracks == ntracks_std
-				tracks_s += "(標準)"
+				ntracks_s += "(標準)"
 			else
-				tracks_s += "(標準は#{ntracks_std})"
+				ntracks_s += "(標準は#{ntracks_std})"
 			end
 		end
 
-		$stdout.print("  #{sector_size_s} × #{nsectors_s} × #{tracks_s}\n")
+		$stdout.print("  #{ssize_s} × #{nsecs_s} × #{ntracks_s}\n")
 
 		if mfm_count.length >= 2
 			$stdout.print("  FM/MFM混在: FM:#{mfm_count[false]}セクタ MFM:#{mfm_count[true]}セクタ\n")
@@ -355,27 +381,52 @@ class DiskImage
 			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_count_s})\n")
 		end
 
-		uniform_map = @track.map do |t|
-			if t&.is_uniform?
-				t.sector[0].data[0]
+		st0_count = st0_count.to_a.sort_by{ |e| e[1] }.reverse
+		st0_count.each do |val, count|
+			$stdout.print("  ST0が#{val.to_hex}のセクタが#{count}個あります\n")
+		end
+
+		st1_count = st1_count.to_a.sort_by{ |e| e[1] }.reverse
+		st1_count.each do |val, count|
+			$stdout.print("  ST1が#{val.to_hex}のセクタが#{count}個あります\n")
+		end
+
+		st2_count = st2_count.to_a.sort_by{ |e| e[1] }.reverse
+		st2_count.each do |val, count|
+			$stdout.print("  ST2が#{val.to_hex}のセクタが#{count}個あります\n")
+		end
+
+		pda_count = pda_count.to_a.sort_by{ |e| e[1] }.reverse
+		pda_count.each do |val, count|
+			case val
+			when 0x90
+				val_s = "(2HD 1.2MB)"
+			when 0x30
+				val_s = "(2HD 1.44MB)"
+			when 0x10
+				val_s = "(2DD 640KB)"
 			else
-				false
+				val_s = "(不明)"
 			end
+			$stdout.print("  PDAが#{val.to_hex}#{val_s}のセクタが#{count}個あります\n")
 		end
 
 		trkno = 1
-		uniform_map.chunk{ |d| d }.each do |c|
-			c_tracks = c[1].length
+		uniform_map = @track.map do |t|
+			(t&.is_uniform?) ? t.sector[0].data[0] : false
+		end
+		uniform_map.chunk{ |d| d }.each do |cval, cdata|
+			ctracks = cdata.length
 
-			if c[0]
-				if c_tracks == 1
-					$stdout.print("  トラック#{trkno}は全て#{c[0].ord.to_hex}です\n")
+			if cval
+				if ctracks == 1
+					$stdout.print("  トラック#{trkno}は全て#{cval.ord.to_hex}です\n")
 				else
-					$stdout.print("  トラック#{trkno}～#{trkno+c_tracks-1}は全て#{c[0].ord.to_hex}です\n")
+					$stdout.print("  トラック#{trkno}～#{trkno+ctracks-1}は全て#{cval.ord.to_hex}です\n")
 				end
 			end
 
-			trkno += c_tracks
+			trkno += ctracks
 		end
 	end
 end
@@ -1264,7 +1315,7 @@ end
 class XDF < DiskImage
 	HEADER_SIZE = 0
 	Geometries = [
-		# length   media  cyls heads  nsec ssize ssize1
+		# length   media  cyls heads nsecs ssize ssize1
 		[1474560, :"2hd",   80,    2,   18,  512],			# 1.44MB 2HD
 		[1474560, :"2hd",   80,    2,    9, 1024],			# 1.44MB 2HD
 		[1261568, :"2hd",   77,    2,    8, 1024],			# 1.23MB 2HD
