@@ -55,7 +55,7 @@ class DiskImage
 
 	def clear
 		@mediatype = nil # :"1d", :"1dd", :"2d", :"2dd", :"2hd", :unknown
-		@track = []
+		@track = [] # 要素はTrack(要素がnilのこともある)
 		@writeprotect = nil # true:Write Protected false:Writeable
 		@comment = nil
 		return self
@@ -78,7 +78,7 @@ class DiskImage
 		end
 
 		def clear
-			@sector = []
+			@sector = [] # 要素はSector(要素がnilのことはない)
 			return self
 		end
 
@@ -88,15 +88,53 @@ class DiskImage
 			}
 		end
 
+		# 空か?
+		def empty?
+			return @sector.empty?
+		end
+
 		# トラックに含まれるセクタ数
 		def nsectors
 			return @sector.length
 		end
 
+		# C(シリンダ)番号 不統一の場合は :mix
+		def c
+			return nil  if empty?
+			val = @sector.first.c
+			return @sector.all?{ |s| s.c == val } ? val : :mix
+		end
+
+		# H(ヘッド)番号 不統一の場合は :mix
+		def h
+			return nil  if empty?
+			val = @sector.first.h
+			return @sector.all?{ |s| s.h == val } ? val : :mix
+		end
+
+		# R(レコード)番号の配列
+		def r
+			return @sector.map{ |s| s.r }
+		end
+
+		# N(セクタ長)番号 不統一の場合は :mix
+		def n
+			return nil  if empty?
+			val = @sector.first.n
+			return @sector.all?{ |s| s.n == val } ? val : :mix
+		end
+
+		# セクタ長 不統一の場合は :mix
+		def ssize
+			return nil  if empty?
+			val = @sector.first.ssize
+			return @sector.all?{ |s| s.ssize == val } ? val : :mix
+		end
+
 		# 全バイトが同一値であるか
 		def is_uniform?(test_value=nil)
 			return nil  if @sector.empty?
-			test_value ||= @sector[0].data[0]
+			test_value ||= @sector.first.data[0]
 			return @sector.all?{ |s| s.is_uniform?(test_value) }
 		end
 	end
@@ -141,22 +179,27 @@ class DiskImage
 			}
 		end
 
+		# セクタ長
+		def ssize
+			return @data.length
+		end
+
 		# 全バイトが同一値であるか
 		def is_uniform?(test_value=nil)
 			return nil  if @data.empty?
 			test_value ||= @data[0]
-			return @data == test_value * @data.length
+			return @data == test_value * ssize
 		end
 	end
 
 	# 空か?
 	def empty?
-		return @mediatype.nil? && @writeprotect.nil? && @comment.nil? && xtracks == 0
+		return @mediatype.nil? && @writeprotect.nil? && @comment.nil? && @track.empty?
 	end
 
 	# データのある最終トラック番号
 	def ntracks
-		last_empty_track_count = @track.reverse.find_index { |t| !t.nil? }
+		last_empty_track_count = @track.reverse.find_index{ |t| !t.nil? }
 		if last_empty_track_count
 			return @track.length - last_empty_track_count
 		else
@@ -166,7 +209,45 @@ class DiskImage
 
 	# データのあるトラック数
 	def xtracks
-		return @track.count { |t| !t.nil? }
+		return @track.count{ |t| t && !t.empty? }
+	end
+
+	# シリンダ数 (Cの最大値+1)
+	def cyls
+		maxc = nil
+		@track.filter{ |t| t }.each do |t|
+			c = t.c
+			next  if c == :mix
+			maxc = c  if !maxc || c > maxc
+		end
+		return maxc + 1
+	end
+
+	# ヘッド数 (Hの最大値+1)
+	def heads
+		maxh = nil
+		@track.filter{ |t| t }.each do |t|
+			h = t.h
+			next  if h == :mix
+			maxh = h  if !maxh || h > maxh
+		end
+		return maxh + 1
+	end
+
+	# 各トラックのセクタ数 不統一の場合は :mix
+	def nsectors
+		xtrk = @track.filter{ |t| t }
+		return nil  if xtrk.empty?
+		nsectors = xtrk.first.nsectors
+		return xtrk.all?{ |t| t.nsectors == nsectors } ? nsectors : :mix
+	end
+
+	# 各セクタのセクタ長 不統一の場合は :mix
+	def ssize
+		xtrk = @track.filter{ |t| t }
+		return nil  if xtrk.empty?
+		ssize = xtrk.first.ssize
+		return xtrk.all?{ |t| t.ssize == ssize } ? ssize : :mix
 	end
 
 	# 全データをCHRN順に連結したもの
@@ -195,24 +276,18 @@ class DiskImage
 			$stdout.print("  コメント: #{@comment.inspect}\n")
 		end
 
-		ntracks_std = nil
 		if @mediatype
 			case @mediatype
 			when :"1d"
 				mediatype_s = "1D"
-				ntracks_std = 40
 			when :"1dd"
 				mediatype_s = "1DD"
-				ntracks_std = 80
 			when :"2d"
 				mediatype_s = "2D"
-				ntracks_std = 40 * 2
 			when :"2dd"
 				mediatype_s = "2DD"
-				ntracks_std = 80 * 2
 			when :"2hd"
 				mediatype_s = "2HD"
-				ntracks_std = 80 * 2 # or 77 * 2
 			when :unknown
 				mediatype_s = "不明"
 			else
@@ -263,7 +338,7 @@ class DiskImage
 				sector_count[s.r] ||= 0
 				sector_count[s.r] += 1
 
-				ssize = s.data.length
+				ssize = s.ssize
 				ssize_count[ssize] ||= 0
 				ssize_count[ssize] += 1
 
@@ -322,42 +397,66 @@ class DiskImage
 			end
 		end
 
-		nsecs_count = nsecs_count.to_a.sort_by{ |e| e[1] }.reverse
-		if !nsecs_count.empty?
-			nsecs_s = "#{nsecs_count[0][0]}セクタ"
-			if nsecs_count.length >= 2
-				nsecs_s += "(混在あり)"
+		# 出現頻度順の配列にする
+		nsecs_major = nsecs_count.to_a.sort_by{ |e| e[1] }.reverse
+		ssize_major = ssize_count.to_a.sort_by{ |e| e[1] }.reverse
+		mfm_major = mfm_count.to_a.sort_by{ |e| e[1] }.reverse
+		status_major = status_count.to_a.sort_by{ |e| e[1] }.reverse
+		st0_major = st0_count.to_a.sort_by{ |e| e[1] }.reverse
+		st1_major = st1_count.to_a.sort_by{ |e| e[1] }.reverse
+		st2_major = st2_count.to_a.sort_by{ |e| e[1] }.reverse
+		pda_major = pda_count.to_a.sort_by{ |e| e[1] }.reverse
+
+		wk_ntracks = ntracks
+		wk_xtracks = xtracks
+		wk_cyls = cyls
+		wk_heads = heads
+		wk_nsectors = nsectors
+		wk_ssize = ssize
+
+		if wk_nsectors
+			if wk_nsectors == :mix
+				nsecs_s = "#{nsecs_major[0][0]}セクタ(混在あり)"
+			else
+				nsecs_s = "#{wk_nsectors}セクタ"
 			end
 		else
-			nsecs_s = "0セクタ"
+			nsecs_s = "セクタなし"
 		end
 
-		ssize_count = ssize_count.to_a.sort_by{ |e| e[1] }.reverse
-		if !ssize_count.empty?
-			ssize_s = "#{ssize_count[0][0]}バイト"
-			if ssize_count.length >= 2
-				ssize_s += "(混在あり)"
+		if wk_ssize
+			if wk_ssize == :mix
+				ssize_s = "#{ssize_major[0][0]}バイト(混在あり)"
+			else
+				ssize_s = "#{wk_ssize}バイト"
 			end
 		else
-			sector_size_s = "0バイト"
+			ssize_s = "0バイト"
 		end
 
-		if @mediatype == :"2hd" && !ssize_count.empty? && !nsecs_count.empty?
-			if (ssize_count[0][0] == 1024 && nsecs_count[0][0] == 8) ||
-				(ssize_count.length >= 2 && ssize_count[0][0] == 256 && ssize_count[1][0] == 128 && nsecs_count[0][0] == 26)
-
-				ntracks_std = 77 * 2
+		case wk_cyls
+		when 1 .. 40
+			ntracks_std = 40 * wk_heads
+		when 41 .. 85
+			if wk_nsectors == 8 && wk_ssize == 1024
+				ntracks_std = 77 * wk_heads
+			elsif wk_nsectors == 26 && track[0]&.ssize == 128 && track[1]&.ssize == 256
+				ntracks_std = 77 * wk_heads
+			else
+				ntracks_std = 80 * wk_heads
 			end
+		else
+			ntracks_std = nil
 		end
 
-		if(ntracks == xtracks)
-			ntracks_s = "#{ntracks}トラック"
+		if(wk_ntracks == wk_xtracks)
+			ntracks_s = "#{wk_ntracks}トラック"
 		else
-			ntracks_s = "#{ntracks}(#{xtracks})トラック"
+			ntracks_s = "#{wk_ntracks}(#{wk_xtracks})トラック"
 		end
 
 		if ntracks_std
-			if ntracks == ntracks_std
+			if wk_ntracks == ntracks_std
 				ntracks_s += "(標準)"
 			else
 				ntracks_s += "(標準は#{ntracks_std})"
@@ -374,30 +473,25 @@ class DiskImage
 			$stdout.print("  Deleted Data Address Markの立ったセクタが#{ddam_count}個あります\n")
 		end
 
-		status_count = status_count.to_a.sort_by{ |e| e[1] }.reverse
-		if !status_count.empty?
-			status_count_s = "#{status_count[0][0].to_hex}が#{status_count[0][1]}個"
-			status_count_s += " 他"  if status_count.length >= 2
-			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_count_s})\n")
+		if !status_major.empty?
+			status_major_s = "#{status_major[0][0].to_hex}が#{status_major[0][1]}個"
+			status_major_s += " 他"  if status_major.length >= 2
+			$stdout.print("  FDC Statusが0でないセクタがあります(#{status_major_s})\n")
 		end
 
-		st0_count = st0_count.to_a.sort_by{ |e| e[1] }.reverse
-		st0_count.each do |val, count|
+		st0_major.each do |val, count|
 			$stdout.print("  ST0が#{val.to_hex}のセクタが#{count}個あります\n")
 		end
 
-		st1_count = st1_count.to_a.sort_by{ |e| e[1] }.reverse
-		st1_count.each do |val, count|
+		st1_major.each do |val, count|
 			$stdout.print("  ST1が#{val.to_hex}のセクタが#{count}個あります\n")
 		end
 
-		st2_count = st2_count.to_a.sort_by{ |e| e[1] }.reverse
-		st2_count.each do |val, count|
+		st2_major.each do |val, count|
 			$stdout.print("  ST2が#{val.to_hex}のセクタが#{count}個あります\n")
 		end
 
-		pda_count = pda_count.to_a.sort_by{ |e| e[1] }.reverse
-		pda_count.each do |val, count|
+		pda_major.each do |val, count|
 			case val
 			when 0x90
 				val_s = "(2HD 1.2MB)"
@@ -413,7 +507,7 @@ class DiskImage
 
 		trkno = 1
 		uniform_map = @track.map do |t|
-			(t&.is_uniform?) ? t.sector[0].data[0] : false
+			(t&.is_uniform?) ? t.sector.first.data[0] : false
 		end
 		uniform_map.chunk{ |d| d }.each do |cval, cdata|
 			ctracks = cdata.length
@@ -475,8 +569,8 @@ class DIM < DiskImage
 		end
 
 		# トラック保存状態
-		xtrack_map = filedata[1, 170].to_bytes
-		xtrack_map.each.with_index do |flag, trkno|
+		track_flag = filedata[1, 170].to_bytes
+		track_flag.each.with_index do |flag, trkno|
 			if flag == 0 || flag == 1
 				# OK:NOP
 			else
@@ -504,7 +598,7 @@ class DIM < DiskImage
 
 		# データ本体
 		offset = HEADER_SIZE
-		xtrack_map.each.with_index do |flag, trkno|
+		track_flag.each.with_index do |flag, trkno|
 			case flag
 			when 0 # なし
 				@track[trkno] = nil
@@ -1022,7 +1116,7 @@ class D88 < DiskImage
 
 		# Track data
 		track_offsets = filedata[0x20, 4 * 164].to_dwords
-		header_size = track_offsets.find { |o| o != 0 }
+		header_size = track_offsets.find{ |o| o != 0 }
 		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
 		track_offsets = track_offsets.first(header_tracks)
 
@@ -1089,9 +1183,9 @@ class D88 < DiskImage
 					offset += ssize
 
 					trk.sector << s
-				end while trk.sector.length < nsecs
+				end while trk.nsectors < nsecs
 
-				next_track_start = (track_offsets[(trkno + 1) .. -1].find { |o| o != 0 }) || filedata.length
+				next_track_start = (track_offsets[(trkno + 1) .. -1].find{ |o| o != 0 }) || filedata.length
 				if offset != next_track_start
 					if offset < next_track_start
 						$stdout.print("  トラック#{trkno+1}のデータの後に不要なデータがあります\n")
@@ -1256,8 +1350,8 @@ class DCU < DiskImage
 		end
 
 		# トラック保存状態
-		xtrack_map = filedata[1, 160].to_bytes
-		xtrack_map.each.with_index do |flag, trkno|
+		track_flag = filedata[1, 160].to_bytes
+		track_flag.each.with_index do |flag, trkno|
 			if flag == 0 || flag == 1
 				# OK:NOP
 			else
@@ -1273,7 +1367,7 @@ class DCU < DiskImage
 		when 1
 			$stdout.print("  全トラック格納フラグ: ON\n")
 			(0 ... cyls * heads).each do |trkno|
-				xtrack_map[trkno] = 1
+				track_flag[trkno] = 1
 			end
 		else
 			$stdout.print("  全トラック格納フラグ不正: #{all_cylinders_stored}\n")
@@ -1281,7 +1375,7 @@ class DCU < DiskImage
 
 		# データ本体
 		offset = HEADER_SIZE
-		xtrack_map.each.with_index do |flag, trkno|
+		track_flag.each.with_index do |flag, trkno|
 			case flag
 			when 0 # なし
 				@track[trkno] = nil
@@ -1519,7 +1613,7 @@ def truncate_9(filename)
 		write_file(outfilename, outdata)
 	elsif D88.image?(filedata) && filedata[0x1b].to_byte == 0x10
 		track_offsets = filedata[0x20, 4 * 164].to_dwords
-		header_size = track_offsets.find { |o| o != 0 }
+		header_size = track_offsets.find{ |o| o != 0 }
 		header_tracks = (header_size - 0x20) / 4
 		track_offsets = track_offsets.first(header_tracks)
 
