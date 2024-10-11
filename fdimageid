@@ -362,12 +362,24 @@ class DiskImage
 
 			sector_count = []
 			trk.sector.each.with_index do |s, sec|
+				if s.c > 90
+					$stdout.print("  トラック#{trkno+1}のセクタのCの値が異常です: #{s.c}\n")
+				end
+
 				if s.c != trkno / 2
 					$stdout.print("  トラック#{trkno+1}のセクタのCの値が特殊です: #{s.c} != #{trkno / 2}\n")
 				end
 
+				if s.h > 1
+					$stdout.print("  トラック#{trkno+1}のセクタのHの値が異常です: #{s.h}\n")
+				end
+
 				if s.h != trkno % 2
 					$stdout.print("  トラック#{trkno+1}のセクタのHの値が特殊です: #{s.h} != #{trkno % 2}\n")
+				end
+
+				if s.r < 1 || s.r > 32
+					$stdout.print("  トラック#{trkno+1}のセクタのRの値が異常です: #{s.r}\n")
 				end
 
 				# インターリーブしてるディスクでは普通に異なるのでコメントアウト
@@ -375,10 +387,19 @@ class DiskImage
 				# 	$stdout.print("  トラック#{trkno+1}のセクタのRの値が特殊です: #{s.r} != #{sec+1}\n")
 				# end
 
+				if s.n > 6
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+				end
+
+				ssize_n = 128 << s.n.clamp(..6)
+				ssize = s.ssize
+				if ssize_n != ssize
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{ssize}\n")
+				end
+
 				sector_count[s.r] ||= 0
 				sector_count[s.r] += 1
 
-				ssize = s.ssize
 				ssize_count[ssize] ||= 0
 				ssize_count[ssize] += 1
 
@@ -683,9 +704,9 @@ class NFD_R0 < DiskImage
 
 				next  if s.c == 0xff
 
-				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
-					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c}/#{s.h}/#{s.r}/#{s.n}\n")
-					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
+				if s.n > 6
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+					next # 致命的なのでこのセクタはスキップ
 				end
 
 				case s.mfm
@@ -763,9 +784,9 @@ class NFD_R1 < DiskImage
 					filedata[track_offset, 12].unpack("C12")
 				track_offset += 0x10
 
-				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
-					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c}/#{s.h}/#{s.r}/#{s.n}\n")
-					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
+				if s.n > 6
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+					next # 致命的なのでこのセクタはスキップ
 				end
 
 				case s.mfm
@@ -905,9 +926,9 @@ class SLF < DiskImage
 						filedata[sheader_offset, 32].unpack("V2v6VC4V")
 					sheader_offset += 0x20
 
-					if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
-						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
-						next  if s.n > 6 # 致命的なのでこのセクタはスキップ
+					if s.n > 6
+						$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+						next # 致命的なのでこのセクタはスキップ
 					end
 
 					sdata_offset = tdata_offset + sdata_offset
@@ -980,9 +1001,9 @@ class V98FDD < DiskImage
 
 				next  if s.c == 0xff
 
-				if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
-					$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
-					next  if s.n > 6 # 致命的なのでこのセクタはスキップ
+				if s.n > 6
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+					next # 致命的なのでこのセクタはスキップ
 				end
 
 				case s.ddam
@@ -1155,19 +1176,15 @@ class D88 < DiskImage
 						filedata[offset, 16].unpack("C4vC3x4Cv")
 					offset += 0x10
 
-					if s.c > 90 || s.h > 1 || s.r > 32 || s.n > 6
-						$stdout.print("  トラック#{trkno+1}のCHRN不正: #{s.c} #{s.h} #{s.r} #{s.n}\n")
-						break  if s.n > 6 # 致命的なのでこのトラックはスキップ
-					end
-
-					if nsecs > 32
-						$stdout.print("  トラック#{trkno+1}のセクタ数不正: #{nsecs}\n")
+					if s.n > 6
+						$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
+						break # 致命的なのでこのトラックはスキップ
 					end
 
 					if !track_nsectors
 						track_nsectors = nsecs
 					elsif track_nsectors != nsecs
-						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていない: #{track_nsectors} != #{nsecs}\n")
+						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていません: #{track_nsectors} != #{nsecs}\n")
 					end
 
 					case s.mfm
@@ -1198,7 +1215,7 @@ class D88 < DiskImage
 
 					ssize = 128 << s.n
 					if ssize != datasize
-						$stdout.print("  トラック#{trkno+1}のセクタのN値とデータサイズが異なる: N:#{ssize} != #{datasize}\n")
+						$stdout.print("  トラック#{trkno+1}のセクタのNの値とデータサイズが異なります: N:#{ssize} != #{datasize}\n")
 					end
 
 					s.data = filedata[offset, ssize] || ""
@@ -1262,7 +1279,7 @@ class FDI < DiskImage
 
 		calc_datasize = cyls * heads * nsecs * ssize
 		if calc_datasize != datasize
-			$stdout.print("  ヘッダ情報から算出したデータサイズとヘッダ情報のデータサイズが一致しません: #{calc_datasize} != #{datasize}\n")
+			$stdout.print("  ヘッダ情報のデータサイズとヘッダのCHRNから算出したサイズが一致しません: #{calc_datasize} != #{datasize}\n")
 		end
 
 		if headersize + datasize != filedata.length
