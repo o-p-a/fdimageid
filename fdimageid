@@ -1142,7 +1142,7 @@ class D88 < DiskImage
 			@mediatype = :"2dd"
 		when 0x20 # 2HD
 			@mediatype = :"2hd"
-		when 0x21 # 2HD(1.44MB NP2kai)
+		when 0x21 # 2HD 1.44MB NP2kai
 			$stdout.print("  ヘッダのメディアタイプ: 2HD 1.44MB NP2kai拡張\n")
 			@mediatype = :"2hd"
 		when 0x30 # 1D
@@ -1166,6 +1166,7 @@ class D88 < DiskImage
 		header_tracks = (header_size - 0x20) / 4 # 0x2b0(688byte:164entry) or 0x2a0(672byte:160entry)
 		track_offsets = track_offsets.first(header_tracks)
 
+		rpm_count = [0, 0]
 		track_offsets.each.with_index do |offset, trkno|
 			if offset != 0
 				trk = (@track[trkno] ||= Track.new)
@@ -1208,7 +1209,7 @@ class D88 < DiskImage
 					end
 
 					if rpm == 0 || rpm == 1
-						# OK:NOP
+						rpm_count[rpm] += 1
 					else
 						$stdout.print("  トラック#{trkno+1}のNP2kai RPM不正: #{rpm}\n")
 					end
@@ -1235,6 +1236,16 @@ class D88 < DiskImage
 			end
 		end
 		sweep_niltrack
+
+		if media_flag == 0x21
+			if rpm_count[0] > 0
+				$stdout.print("  ディスクヘッダ上は2HD 1.44MBですが、#{rpm_count[0]}個のセクタのRPMが0です\n")
+			end
+		else
+			if rpm_count[1] > 0
+				$stdout.print("  #{rpm_count[1]}個のセクタのRPMが1です\n")
+			end
+		end
 	end
 
 	def dump
@@ -1259,11 +1270,11 @@ class FDI < DiskImage
 
 		fddtype_id = filedata[4, 4].to_dword
 		case fddtype_id
-		when 0x90 # 2HD(1.2MB)
+		when 0x90 # 2HD 1.2MB
 			@mediatype = :"2hd"
-		when 0x30 # 2HD(1.44MB)
+		when 0x30 # 2HD 1.44MB
 			@mediatype = :"2hd"
-		when 0x10 # 2DD(640KB or 720KB)
+		when 0x10 # 2DD 640KB or 720KB
 			@mediatype = :"2dd"
 		else
 			$stdout.print("  メディアタイプ不明: #{fddtype_id.to_hex}\n")
@@ -1328,23 +1339,23 @@ class DCU < DiskImage
 
 		media_type = filedata[0].to_byte
 		case [media_type, filedata.length]
-		when [0x01, HEADER_SIZE + (77 * 2 * 8 * 1024)] # 2HD(1.25MB 2HS)
+		when [0x01, HEADER_SIZE + (77 * 2 * 8 * 1024)] # 2HD 1.25MB 2HS
 			return true
-		when [0x02, HEADER_SIZE + (80 * 2 * 15 * 512)] # 2HD(1.21MB 2HC)
+		when [0x02, HEADER_SIZE + (80 * 2 * 15 * 512)] # 2HD 1.21MB 2HC
 			return true
-		when [0x03, HEADER_SIZE + (80 * 2 * 18 * 512)] # 2HQ(1.44MB 2HDE)
+		when [0x03, HEADER_SIZE + (80 * 2 * 18 * 512)] # 2HQ 1.44MB 2HDE
 			return true
-		when [0x04, HEADER_SIZE + (80 * 2 * 8 * 512)] # 2DD(640KB)
+		when [0x04, HEADER_SIZE + (80 * 2 * 8 * 512)] # 2DD 640KB
 			return true
-		when [0x05, HEADER_SIZE + (80 * 2 * 9 * 512)] # 2DD(720KB)
+		when [0x05, HEADER_SIZE + (80 * 2 * 9 * 512)] # 2DD 720KB
 			return true
-		when [0x08, HEADER_SIZE + (80 * 2 * 9 * 1024)] # 2HD(1.44MB)
+		when [0x08, HEADER_SIZE + (80 * 2 * 9 * 1024)] # 2HD 1.44MB
 			return true
-		when [0x11, HEADER_SIZE + (1*26*128 + 153*26*256)] # 2HD(Disk BASIC)
+		when [0x11, HEADER_SIZE + (1*26*128 + 153*26*256)] # 2HD Disk BASIC
 			return true
-		when [0x19, HEADER_SIZE + (80 * 2 * 16 * 256)] # 2DD(Disk BASIC)
+		when [0x19, HEADER_SIZE + (80 * 2 * 16 * 256)] # 2DD Disk BASIC
 			return true
-		when [0x21, HEADER_SIZE + (80 * 2 * 26 * 256)] # 2HD(26sector)
+		when [0x21, HEADER_SIZE + (80 * 2 * 26 * 256)] # 2HD 26sector
 			return true
 		end
 
@@ -1356,31 +1367,31 @@ class DCU < DiskImage
 
 		media_type = filedata[0].to_byte
 		case media_type
-		when 0x01 # 2HD(1.25MB 2HS)
+		when 0x01 # 2HD 1.25MB 2HS
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize = 77, 2, 8, 1024
-		when 0x02 # 2HD(1.21MB 2HC)
+		when 0x02 # 2HD 1.21MB 2HC
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize = 80, 2, 15, 512
-		when 0x03 # 2HQ(1.44MB 2HDE)
+		when 0x03 # 2HQ 1.44MB 2HDE
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize = 80, 2, 18, 512
-		when 0x04 # 2DD(640KB)
+		when 0x04 # 2DD 640KB
 			@mediatype = :"2dd"
 			cyls, heads, nsecs, ssize = 80, 2, 8, 512
-		when 0x05 # 2DD(720KB)
+		when 0x05 # 2DD 720KB
 			@mediatype = :"2dd"
 			cyls, heads, nsecs, ssize = 80, 2, 9, 512
-		when 0x08 # 2HD(1.44MB)
+		when 0x08 # 2HD 1.44MB
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
-		when 0x11 # 2HD(Disk BASIC)
+		when 0x11 # 2HD Disk BASIC
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize, ssize1 = 77, 2, 26, 256, 128
-		when 0x19 # 2DD(Disk BASIC)
+		when 0x19 # 2DD Disk BASIC
 			@mediatype = :"2dd"
 			cyls, heads, nsecs, ssize = 80, 2, 16, 256
-		when 0x21 # 2HD(26sector)
+		when 0x21 # 2HD 26sector
 			@mediatype = :"2hd"
 			cyls, heads, nsecs, ssize = 80, 2, 26, 256
 		else
@@ -1637,7 +1648,7 @@ def strip_dim(filename)
 	end
 end
 
-# 9セクタ2DD(720KB)のイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD(640KB)のイメージにする
+# 9セクタ2DD 720KBのイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD 640KBのイメージにする
 def truncate_9(filename)
 	$stdout.print("#{filename}:\n")
 	filedata = read_file(filename).freeze
