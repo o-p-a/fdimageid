@@ -39,6 +39,24 @@ def write_file(filename, data)
 end
 
 class DiskImage
+	COMMON_GEOMETRIES = [
+		# 0                 1        2      3    4     5     6     7
+		# description       length   media  cyls heads nsecs ssize ssize1
+		["2HD 1.44MB",     1474560, :"2hd",   80,    2,   18,  512],
+		["2HD 1.44MB",     1474560, :"2hd",   80,    2,    9, 1024],
+		["2HD 1.23MB",     1261568, :"2hd",   77,    2,    8, 1024],
+		["2HD 1.2MB",      1228800, :"2hd",   80,    2,   15,  512],
+		["2HD 1.04MB",     1064960, :"2hd",   80,    2,   26,  256],
+		["2HD DISK BASIC", 1021696, :"2hd",   77,    2,   26,  256,  128],
+		["2DD 800KB",       819200, :"2dd",   80,    2,   10,  512],
+		["2DD 720KB",       737280, :"2dd",   80,    2,    9,  512],
+		["2DD 640KB",       655360, :"2dd",   80,    2,    8,  512],
+		["2DD DISK BASIC",  655360, :"2dd",   80,    2,   16,  256],
+		["2D 320KB",        327680, :"2d",    40,    2,   16,  256],
+		["1DD 320KB",       327680, :"1dd",   80,    1,   16,  256],
+		["1D 160KB",        163840, :"1d",    40,    1,   16,  256],
+	]
+
 	attr_accessor(:mediatype, :track, :writeprotect, :comment)
 
 	def initialize(filename:nil, data:nil)
@@ -237,25 +255,6 @@ class DiskImage
 		return @track.count{ |t| !t.empty? }
 	end
 
-	# このジオメトリのディスクであれば通常何トラックかを得る
-	def ntracks_std
-		case cyls
-		when 0 .. 45
-			return 40 * heads
-		when 46 .. 85
-			wk_nsectors = nsectors
-			if wk_nsectors == 8 && track[0].ssize == 1024
-				return 77 * heads
-			elsif wk_nsectors == 26 && (track[0].ssize == 128 && track[1].ssize == 256)
-				return 77 * heads
-			else
-				return 80 * heads
-			end
-		end
-
-		return nil
-	end
-
 	# シリンダ数 (Cの最大値+1)
 	def cyls
 		maxc = nil
@@ -367,7 +366,7 @@ class DiskImage
 				end
 
 				if s.c != trkno / 2
-					$stdout.print("  トラック#{trkno+1}のセクタのCの値が特殊です: #{s.c} != #{trkno / 2}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのCの値が特殊です: C:#{s.c} (!=#{trkno / 2})\n")
 				end
 
 				if s.h > 1
@@ -375,7 +374,7 @@ class DiskImage
 				end
 
 				if s.h != trkno % 2
-					$stdout.print("  トラック#{trkno+1}のセクタのHの値が特殊です: #{s.h} != #{trkno % 2}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのHの値が特殊です: H:#{s.h} (!=#{trkno % 2})\n")
 				end
 
 				if s.r < 1 || s.r > 32
@@ -384,7 +383,7 @@ class DiskImage
 
 				# インターリーブしてるディスクでは普通に異なるのでコメントアウト
 				# if s.r != sec + 1
-				# 	$stdout.print("  トラック#{trkno+1}のセクタのRの値が特殊です: #{s.r} != #{sec+1}\n")
+				# 	$stdout.print("  トラック#{trkno+1}のセクタのRの値が特殊です: R:#{s.r} (!=#{sec+1})\n")
 				# end
 
 				if s.n > 6
@@ -468,10 +467,11 @@ class DiskImage
 		st2_major = st2_count.to_a.sort_by{ |e| e[1] }.reverse
 		pda_major = pda_count.to_a.sort_by{ |e| e[1] }.reverse
 
-		wk_ssize = ssize
+		wk_ssize2 = wk_ssize = ssize
 		if wk_ssize
 			if wk_ssize == :mix
-				ssize_s = "#{ssize_major[0][0]}バイト(混在あり)"
+				wk_ssize2 = ssize_major[0][0]
+				ssize_s = "#{wk_ssize2}バイト(混在あり)"
 			else
 				ssize_s = "#{wk_ssize}バイト"
 			end
@@ -479,10 +479,11 @@ class DiskImage
 			ssize_s = "0バイト"
 		end
 
-		wk_nsectors = nsectors
+		wk_nsectors2 = wk_nsectors = nsectors
 		if wk_nsectors
 			if wk_nsectors == :mix
-				nsecs_s = "#{nsecs_major[0][0]}セクタ(混在あり)"
+				wk_nsectors2 = nsecs_major[0][0]
+				nsecs_s = "#{wk_nsectors2}セクタ(混在あり)"
 			else
 				nsecs_s = "#{wk_nsectors}セクタ"
 			end
@@ -497,14 +498,6 @@ class DiskImage
 			ntracks_s = "#{wk_ntracks}(#{xtracks})トラック"
 		end
 
-		if ntracks_std
-			if wk_ntracks == ntracks_std
-				ntracks_s += "(標準)"
-			else
-				ntracks_s += "(標準は#{ntracks_std})"
-			end
-		end
-
 		wk_total_size = total_size
 		if wk_total_size / 1024 >= 1000
 			total_size_kb = "%.2fMB" % ((wk_total_size / 1024) / 1000.0)
@@ -517,6 +510,55 @@ class DiskImage
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド = #{ntracks_s}\n")
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} = #{total_sectors}セクタ\n")
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} x #{ssize_s} = #{wk_total_size}バイト(#{total_size_kb})\n")
+
+		guess_format = nil
+		if !guess_format # 普通に全要素をチェック
+			COMMON_GEOMETRIES.each.with_index do |g, i|
+				g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g
+				wk_media = @mediatype || g_media
+				if g_ssize1
+					if wk_total_size == g_len && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+						guess_format = i
+						break
+					end
+				else
+					if wk_total_size == g_len && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize
+						guess_format = i
+						break
+					end
+				end
+			end
+		end
+		if !guess_format # 総データサイズとシリンダ数を曖昧検索
+			COMMON_GEOMETRIES.each.with_index do |g, i|
+				g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g
+				wk_media = @mediatype || g_media
+				cyls_ok = ((wk_cyls <= 45 && g_cyls <= 45) || (wk_cyls > 45 && g_cyls > 45)) ? true : false
+				if g_ssize1
+					if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+						guess_format = i
+						break
+					end
+				else
+					if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize
+						guess_format = i
+						break
+					end
+				end
+			end
+		end
+
+		if guess_format
+			g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = COMMON_GEOMETRIES[guess_format]
+
+			$stdout.print("  推定フォーマット: #{g_desc}\n")
+
+			if wk_cyls != g_cyls
+				$stdout.print("  シリンダ数が通常と異なります: 標準は#{g_cyls}(#{g_cyls * g_heads}トラック)\n")
+			end
+		else
+			$stdout.print("  一般的でないフォーマットがされています\n")
+		end
 
 		if mfm_count.length >= 2
 			$stdout.print("  FM/MFM混在: FM:#{mfm_count[false]}セクタ MFM:#{mfm_count[true]}セクタ\n")
@@ -547,15 +589,15 @@ class DiskImage
 		pda_major.each do |val, count|
 			case val
 			when 0x90
-				val_s = "(2HD 1.2MB)"
+				val_s = "2HD 1.2MB"
 			when 0x30
-				val_s = "(2HD 1.44MB)"
+				val_s = "2HD 1.44MB"
 			when 0x10
-				val_s = "(2DD 640KB)"
+				val_s = "2DD 640KB"
 			else
-				val_s = "(不明)"
+				val_s = "不明"
 			end
-			$stdout.print("  PDAが#{val.to_hex}#{val_s}のセクタが#{count}個あります\n")
+			$stdout.print("  PDAが#{val.to_hex}: #{val_s}のセクタが#{count}個あります\n")
 		end
 
 		trkno = 1
@@ -899,7 +941,7 @@ class SLF < DiskImage
 		$stdout.print("  SLFバージョン: #{version.to_hex}\n")
 
 		if filesize != filedata.length
-			$stdout.print("  ヘッダのファイルサイズと実際のサイズが異なります: #{filesize} != #{filedata.length}\n")
+			$stdout.print("  ヘッダのファイルサイズと実際のサイズが異なります: #{filesize} (!=#{filedata.length})\n")
 		end
 
 		if flag != 0
@@ -1185,7 +1227,7 @@ class D88 < DiskImage
 					if !track_nsectors
 						track_nsectors = nsecs
 					elsif track_nsectors != nsecs
-						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていません: #{track_nsectors} != #{nsecs}\n")
+						$stdout.print("  トラック#{trkno+1}の総セクタ数が統一されていません: #{nsecs} (!=#{track_nsectors})\n")
 					end
 
 					case s.mfm
@@ -1216,7 +1258,7 @@ class D88 < DiskImage
 
 					ssize = 128 << s.n
 					if ssize != datasize
-						$stdout.print("  トラック#{trkno+1}のセクタのNの値とデータサイズが異なります: N:#{ssize} != #{datasize}\n")
+						$stdout.print("  トラック#{trkno+1}のセクタのNの値とデータサイズが異なります: N:#{datasize} (!=#{ssize})\n")
 					end
 
 					s.data = filedata[offset, ssize] || ""
@@ -1290,11 +1332,11 @@ class FDI < DiskImage
 
 		calc_datasize = cyls * heads * nsecs * ssize
 		if calc_datasize != datasize
-			$stdout.print("  ヘッダ情報のデータサイズとヘッダのCHRNから算出したサイズが一致しません: #{calc_datasize} != #{datasize}\n")
+			$stdout.print("  ヘッダ情報のデータサイズとヘッダのCHRNから算出したサイズが一致しません: #{datasize} (!=#{calc_datasize})\n")
 		end
 
 		if headersize + datasize != filedata.length
-			$stdout.print("  ヘッダ情報のデータサイズと実際のファイルサイズが一致しません: #{headersize + datasize} != #{filedata.length}\n")
+			$stdout.print("  ヘッダ情報のデータサイズと実際のファイルサイズが一致しません: #{headersize + datasize} (!=#{filedata.length})\n")
 		end
 
 		offset = headersize
@@ -1471,9 +1513,9 @@ class XDF < DiskImage
 		[ 737280, :"2dd",   80,    2,    9,  512],			# 2DD 720KB
 		[ 655360, :"2dd",   80,    2,    8,  512],			# 2DD 640KB
 		[ 655360, :"2dd",   80,    2,   16,  256],			# 2DD DISK BASIC
-		[ 327680, :"2d",    40,    2,    8,  512],			# 2D 320KB
-		[ 327680, :"1dd",   80,    1,    8,  512],			# 1DD 320KB
-		[ 163840, :"1d",    40,    1,    8,  512],			# 1D 160KB
+		[ 327680, :"2d",    40,    2,   16,  256],			# 2D 320KB
+		[ 327680, :"1dd",   80,    1,   16,  256],			# 1DD 320KB
+		[ 163840, :"1d",    40,    1,   16,  256],			# 1D 160KB
 	]
 
 	def self.image?(filedata)
@@ -1590,9 +1632,9 @@ def fdimageid(filename)
 			$stdout.print("  💾 べたイメージ (2DD 720KB MSX) [.dsk]\n")
 		when 80 * 2 * 8 * 512
 			$stdout.print("  💾 べたイメージ (2DD 640KB) [.2dd]\n")
-		when 40 * 2 * 8 * 512
+		when 40 * 2 * 16 * 256
 			$stdout.print("  💾 べたイメージ (2D 320KB) [.2d]\n")
-		when 40 * 1 * 8 * 512
+		when 40 * 1 * 16 * 256
 			$stdout.print("  💾 べたイメージ (1D 160KB) [.1d]\n")
 		else
 			$stdout.print("  💾 べたイメージ [.xdf]\n")
