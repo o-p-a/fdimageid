@@ -42,16 +42,19 @@ class DiskImage
 	COMMON_GEOMETRIES = [
 		# 0                   1        2      3    4     5     6     7
 		# description         length   media  cyls heads nsecs ssize ssize1
+		["2ED 2.88MB",       2949120, :"2hd",   80,    2,   36,  512],
 		["2HD 1.44MB PC/AT", 1474560, :"2hd",   80,    2,   18,  512],
 		["2HD 1.44MB",       1474560, :"2hd",   80,    2,    9, 1024],
 		["2HD 1.23MB PC98",  1261568, :"2hd",   77,    2,    8, 1024],
-		["2HD 1.2MB PC/AT",  1228800, :"2hd",   80,    2,   15,  512],
+		["2HC 1.2MB PC/AT",  1228800, :"2hd",   80,    2,   15,  512],
 		["2HD 1.04MB",       1064960, :"2hd",   80,    2,   26,  256],
+		["2HD 1.00MB",       1025024, :"2hd",   77,    2,   26,  256],
 		["2HD DISK BASIC",   1021696, :"2hd",   77,    2,   26,  256,  128],
 		["2DD 800KB",         819200, :"2dd",   80,    2,   10,  512],
 		["2DD 720KB MSX",     737280, :"2dd",   80,    2,    9,  512],
 		["2DD 640KB",         655360, :"2dd",   80,    2,    8,  512],
 		["2DD DISK BASIC",    655360, :"2dd",   80,    2,   16,  256],
+		["2D 360KB",          368640, :"2d",    40,    2,    9,  512],
 		["2D 320KB",          327680, :"2d",    40,    2,   16,  256],
 		["1DD 320KB",         327680, :"1dd",   80,    1,   16,  256],
 		["1D 160KB",          163840, :"1d",    40,    1,   16,  256],
@@ -236,8 +239,8 @@ class DiskImage
 		end
 	end
 
-	def mediatype_s
-		return self.class.mediatype_s(@mediatype)
+	def mediatype_s(mediatype=@mediatype)
+		return self.class.mediatype_s(mediatype)
 	end
 
 	# 空か?
@@ -263,7 +266,7 @@ class DiskImage
 			next  if !c.is_a?(Integer)
 			maxc = c  if !maxc || c > maxc
 		end
-		return maxc + 1
+		return maxc ? (maxc + 1) : nil
 	end
 
 	# ヘッド数 (Hの最大値+1)
@@ -274,7 +277,7 @@ class DiskImage
 			next  if !h.is_a?(Integer)
 			maxh = h  if !maxh || h > maxh
 		end
-		return maxh + 1
+		return maxh ? (maxh + 1) : nil
 	end
 
 	# 1トラックのセクタ数 不統一の場合は :mix
@@ -305,13 +308,13 @@ class DiskImage
 	def whole_data
 	end
 
-	# @track内のnil要素をは空のTrackで埋める
+	# (内部用)@track内のnil要素をは空のTrackで埋める
 	def sweep_niltrack
 		@track.map!{ |t| t || Track.new }
 	end
 	protected(:sweep_niltrack)
 
-	# ファイルサイズチェック(内部用)
+	# (内部用)ファイルサイズチェック
 	def excess_data_check(expect, actual)
 		excess_data_length = expect - actual
 		if excess_data_length > 0
@@ -339,12 +342,13 @@ class DiskImage
 
 		if !@writeprotect.nil?
 			if @writeprotect
-				$stdout.print("  書き込み禁止\n")
+				$stdout.print("  ライトプロテクト: 書き込み禁止\n")
 			else
-				$stdout.print("  書き込み可\n")
+				$stdout.print("  ライトプロテクト: 書き込み可\n")
 			end
 		end
 
+		# セクタ情報の統計を算出
 		nsecs_count = {}
 		ssize_count = {}
 		mfm_count = {}
@@ -467,6 +471,7 @@ class DiskImage
 		st2_major = st2_count.to_a.sort_by{ |e| e[1] }.reverse
 		pda_major = pda_count.to_a.sort_by{ |e| e[1] }.reverse
 
+		# ジオメトリ算出
 		wk_ssize2 = wk_ssize = ssize
 		if wk_ssize
 			if wk_ssize == :mix
@@ -511,6 +516,7 @@ class DiskImage
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} = #{total_sectors}セクタ\n")
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} x #{ssize_s} = #{wk_total_size}バイト(#{total_size_kb})\n")
 
+		# 推定フォーマット
 		guess_format = nil
 		if !guess_format # 普通に全要素をチェック
 			COMMON_GEOMETRIES.each.with_index do |g, i|
@@ -553,6 +559,10 @@ class DiskImage
 
 			$stdout.print("  推定フォーマット: #{g_desc}\n")
 
+			if @mediatype && @mediatype != g_media
+				$stdout.print("  メディア種別と実際のフォーマットが異なります\n")
+			end
+
 			if wk_cyls != g_cyls
 				$stdout.print("  シリンダ数が通常と異なります: 標準は#{g_cyls}(#{g_cyls * g_heads}トラック)\n")
 			end
@@ -587,17 +597,23 @@ class DiskImage
 		end
 
 		pda_major.each do |val, count|
+			mediatype_unmatch = false
 			case val
 			when 0x90
 				val_s = "2HD 1.2MB"
+				mediatype_unmatch = true  if @mediatype && @mediatype != :"2hd"
 			when 0x30
 				val_s = "2HD 1.44MB"
+				mediatype_unmatch = true  if @mediatype && @mediatype != :"2hd"
 			when 0x10
 				val_s = "2DD 640KB"
+				mediatype_unmatch = true  if @mediatype && @mediatype != :"2dd"
 			else
 				val_s = "不明"
 			end
-			$stdout.print("  PDAが#{val.to_hex}: #{val_s}のセクタが#{count}個あります\n")
+			if mediatype_unmatch
+				$stdout.print("  PDAが#{val.to_hex}: #{val_s}(メディア種別と不整合)のセクタが#{count}個あります#{mediatype_unmatch_s}\n")
+			end
 		end
 
 		trkno = 1
@@ -1605,25 +1621,7 @@ def fdimageid(filename)
 
 	# XDF(.xdf)
 	when XDF.image?(filedata)
-		case filedata.length
-		when 80 * 2 * 18 * 512
-			$stdout.print("  💾 べたイメージ [.2hd]\n")
-		when 77 * 2 * 8 * 1024
-			$stdout.print("  💾 べたイメージ [.xdf .2hd .dup .hdm .tfd]\n")
-		when 80 * 2 * 15 * 512
-			$stdout.print("  💾 べたイメージ [.2hd]\n")
-		when 80 * 2 * 9 * 512
-			$stdout.print("  💾 べたイメージ [.dsk]\n")
-		when 80 * 2 * 8 * 512
-			$stdout.print("  💾 べたイメージ [.2dd]\n")
-		when 40 * 2 * 16 * 256
-			$stdout.print("  💾 べたイメージ [.2d]\n")
-		when 40 * 1 * 16 * 256
-			$stdout.print("  💾 べたイメージ [.1d]\n")
-		else
-			$stdout.print("  💾 べたイメージ [.xdf]\n")
-		end
-
+		$stdout.print("  💾 べたイメージ [.xdf .dup .hdm .tfd .dsk .2hd .2dd .2d .1d]\n")
 		image = XDF.new(data:filedata)
 		image.report_all
 
