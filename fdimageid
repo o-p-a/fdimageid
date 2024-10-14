@@ -42,24 +42,24 @@ class DiskImage
 	IMAGE_FORMATNAME = "Abstruct floppy disk image"
 	IMAGE_EXTNAMES = []
 	COMMON_GEOMETRIES = [
-		# 0                   1        2      3    4     5     6     7
-		# description         length   media  cyls heads nsecs ssize ssize1
-		["2ED 2.88MB",       2949120, :"2hd",   80,    2,   36,  512],
-		["2HD 1.44MB PC/AT", 1474560, :"2hd",   80,    2,   18,  512],
-		["2HD 1.44MB",       1474560, :"2hd",   80,    2,    9, 1024],
-		["2HD 1.23MB PC98",  1261568, :"2hd",   77,    2,    8, 1024],
-		["2HC 1.2MB PC/AT",  1228800, :"2hd",   80,    2,   15,  512],
-		["2HD 1.04MB",       1064960, :"2hd",   80,    2,   26,  256],
-		["2HD 1.00MB",       1025024, :"2hd",   77,    2,   26,  256],
-		["2HD DISK BASIC",   1021696, :"2hd",   77,    2,   26,  256,  128],
-		["2DD 800KB",         819200, :"2dd",   80,    2,   10,  512],
-		["2DD 720KB MSX",     737280, :"2dd",   80,    2,    9,  512],
-		["2DD 640KB",         655360, :"2dd",   80,    2,    8,  512],
-		["2DD DISK BASIC",    655360, :"2dd",   80,    2,   16,  256],
-		["2D 360KB",          368640, :"2d",    40,    2,    9,  512],
-		["2D 320KB",          327680, :"2d",    40,    2,   16,  256],
-		["1DD 320KB",         327680, :"1dd",   80,    1,   16,  256],
-		["1D 160KB",          163840, :"1d",    40,    1,   16,  256],
+		# 0                     1        2      3    4     5     6     7
+		# description           length   media  cyls heads nsecs ssize ssize1
+		["2ED 2.88MB",         2949120, :"2hd",   80,    2,   36,  512],
+		["2HD 1.44MB PC/AT",   1474560, :"2hd",   80,    2,   18,  512],
+		["2HD 1.44MB 9sector", 1474560, :"2hd",   80,    2,    9, 1024],
+		["2HD 1.23MB PC98",    1261568, :"2hd",   77,    2,    8, 1024],
+		["2HC 1.2MB PC/AT",    1228800, :"2hd",   80,    2,   15,  512],
+		["2HD 1.04MB",         1064960, :"2hd",   80,    2,   26,  256],
+		["2HD 1.00MB",         1025024, :"2hd",   77,    2,   26,  256],
+		["2HD DISK BASIC",     1021696, :"2hd",   77,    2,   26,  256,  128],
+		["2DD 800KB",           819200, :"2dd",   80,    2,   10,  512],
+		["2DD 720KB MSX",       737280, :"2dd",   80,    2,    9,  512],
+		["2DD 640KB",           655360, :"2dd",   80,    2,    8,  512],
+		["2DD DISK BASIC",      655360, :"2dd",   80,    2,   16,  256],
+		["2D 360KB",            368640, :"2d",    40,    2,    9,  512],
+		["2D 320KB",            327680, :"2d",    40,    2,   16,  256],
+		["1DD 320KB",           327680, :"1dd",   80,    1,   16,  256],
+		["1D 160KB",            163840, :"1d",    40,    1,   16,  256],
 	]
 
 	attr_accessor(:mediatype, :track, :writeprotect, :comment)
@@ -1587,6 +1587,9 @@ class XDF < DiskImage
 
 		geom = COMMON_GEOMETRIES.find{ |g| g[1] == filedata.length }
 		cyls, heads, nsecs, ssize = geom[3 .. 6]
+		if COMMON_GEOMETRIES.count{ |g| g[1] == filedata.length } >= 2
+			$stdout.print("  ジオメトリの候補が複数あります: #{geom[0]}と仮定します\n")
+		end
 
 		offset = 0
 		(0 ... cyls).each do |cyl|
