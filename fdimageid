@@ -720,7 +720,7 @@ class DIM < DiskImage
 					trk.sector << s
 				end
 			else
-				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
+				$stdout.print("  トラック#{trkno+1}のデータ有無フラグが不正: #{flag}\n")
 			end
 		end
 		excess_data_check(filedata.length, offset)
@@ -773,7 +773,7 @@ class NFD_R0 < DiskImage
 				when 1
 					s.mfm = true
 				else
-					$stdout.print("  flMFMの値が不正: #{s.mfm}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのflMFMの値が不正: #{s.mfm}\n")
 					s.mfm = nil
 				end
 
@@ -783,7 +783,7 @@ class NFD_R0 < DiskImage
 				when 1
 					s.ddam = true
 				else
-					$stdout.print("  flDDAMの値が不正: #{s.ddam}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのflDDAMの値が不正: #{s.ddam}\n")
 					s.ddam = nil
 				end
 
@@ -857,7 +857,7 @@ class NFD_R1 < DiskImage
 				when 1
 					s.mfm = true
 				else
-					$stdout.print("  flMFMの値が不正: #{s.mfm}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのflMFMの値が不正: #{s.mfm}\n")
 					s.mfm = nil
 				end
 
@@ -867,7 +867,7 @@ class NFD_R1 < DiskImage
 				when 1
 					s.ddam = true
 				else
-					$stdout.print("  flDDAMの値が不正: #{s.ddam}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのflDDAMの値が不正: #{s.ddam}\n")
 					s.ddam = nil
 				end
 
@@ -876,7 +876,7 @@ class NFD_R1 < DiskImage
 					s.data = filedata[data_offset, ssize] || ""
 					data_offset += ssize
 				else
-					$stdout.print("  リトライデータが存在します: 1+#{byRetry}回\n")
+					$stdout.print("  トラック#{trkno+1}にリトライデータが存在します: 1+#{byRetry}回\n")
 					s.data = []
 					(0 .. byRetry).each do
 						s.data << (filedata[data_offset, ssize] || "")
@@ -887,6 +887,7 @@ class NFD_R1 < DiskImage
 				trk.sector << s
 			end
 
+			# 特殊読み込みデータ
 			(0 ... wDiag).each do
 				d_cmd, d_c, d_h, d_r, d_n, d_byStatus, d_bySTS0, d_bySTS1, d_bySTS2, d_byRetry, d_dwDataLen, d_byPDA =
 					filedata[track_offset, 15].unpack("C10VC")
@@ -1003,29 +1004,30 @@ class SLF < DiskImage
 					s.data = filedata[sdata_offset, ssize] || ""
 					trk.sector << s
 
+					chrn_s = "[#{s.c}/#{s.h}/#{s.r}/#{s.n}]"
 					if (status & 0x1) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): IDAMパターンエラー\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: IDAMパターンエラー\n")
 					end
 					if (status & 0x2) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): ID CRCエラー\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: ID CRCエラー\n")
 					end
 					if (status & 0x4) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATAAMパターンエラー\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: DATAAMパターンエラー\n")
 					end
 					if (status & 0x8) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): DATA CRCエラー\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: DATA CRCエラー\n")
 					end
 					if (status & 0x10) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): セクタ構造のエラー\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: セクタ構造のエラー\n")
 					end
 					if (status & 0x100) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): Deletedセクタ\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: Deletedセクタ\n")
 					end
 					if (status & 0x200) != 0
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 入れ子セクタ\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: 入れ子セクタ\n")
 					end
 					if (status | 0x31f) != 0x31f # 上記以外のビットが立っていたら
-						$stdout.print("  ステータス(#{id_c}/#{id_h}/#{id_s}/#{id_n}): 不明な値(#{status.to_hex})\n")
+						$stdout.print("  トラック#{trkno+1}のステータス #{chrn_s}: 不明な値(#{status.to_hex})\n")
 					end
 				end
 			end
@@ -1078,7 +1080,7 @@ class V98FDD < DiskImage
 				when 1
 					s.ddam = true
 				else
-					$stdout.print("  DDAMの値が不正: #{s.ddam}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのDDAMの値が不正: #{s.ddam}\n")
 					s.ddam = nil
 				end
 
@@ -1088,12 +1090,12 @@ class V98FDD < DiskImage
 				when 1
 					s.mfm = true
 				else
-					$stdout.print("  MFの値が不正: #{s.mfm}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのMFの値が不正: #{s.mfm}\n")
 					s.mfm = nil
 				end
 
 				if hd != 1
-					$stdout.print("  2HDフラグが1でないセクタがあります: #{hd}\n")
+					$stdout.print("  トラック#{trkno+1}に2HDフラグが1でないセクタがあります: #{hd}\n")
 					@mediatype = nil
 				end
 
@@ -1472,7 +1474,7 @@ class DCU < DiskImage
 			if flag == 0 || flag == 1
 				# OK:NOP
 			else
-				$stdout.print("  #{trkno+1}トラックのデータ有無フラグが不正: #{flag}\n")
+				$stdout.print("  トラック#{trkno+1}のデータ有無フラグが不正: #{flag}\n")
 			end
 		end
 
