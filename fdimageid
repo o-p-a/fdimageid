@@ -39,6 +39,8 @@ def write_file(filename, data)
 end
 
 class DiskImage
+	IMAGE_FORMATNAME = "Abstruct floppy disk image"
+	IMAGE_EXTNAMES = []
 	COMMON_GEOMETRIES = [
 		# 0                   1        2      3    4     5     6     7
 		# description         length   media  cyls heads nsecs ssize ssize1
@@ -61,6 +63,53 @@ class DiskImage
 	]
 
 	attr_accessor(:mediatype, :track, :writeprotect, :comment)
+
+	def self.image_formatname
+		return self::IMAGE_FORMATNAME
+	end
+
+	def self.image_extnames
+		return self::IMAGE_EXTNAMES
+	end
+
+	def self.image_extnames_s
+		return "[#{image_extnames.join(" ")}]"
+	end
+
+	def self.guess_image_format(filename:nil, data:nil)
+		if filename
+			data = read_file(filename)
+		end
+
+		[DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, DIP, D88, FDI, DCU, XDF].each do |c|
+			if c.image?(data)
+				return c
+			end
+		end
+
+		return nil
+	end
+
+	def self.mediatype_s(mediatype)
+		case mediatype
+		when nil
+			return ""
+		when :"1d"
+			return "1D"
+		when :"1dd"
+			return "1DD"
+		when :"2d"
+			return "2D"
+		when :"2dd"
+			return "2DD"
+		when :"2hd"
+			return "2HD"
+		when :unknown
+			return "不明"
+		else
+			return "不正な値(#{mediatype})"
+		end
+	end
 
 	def initialize(filename:nil, data:nil)
 		clear
@@ -215,27 +264,6 @@ class DiskImage
 			return nil  if @data.empty?
 			test_value ||= @data[0]
 			return @data == test_value * ssize
-		end
-	end
-
-	def self.mediatype_s(mediatype)
-		case mediatype
-		when nil
-			return ""
-		when :"1d"
-			return "1D"
-		when :"1dd"
-			return "1DD"
-		when :"2d"
-			return "2D"
-		when :"2dd"
-			return "2DD"
-		when :"2hd"
-			return "2HD"
-		when :unknown
-			return "不明"
-		else
-			return "不正な値(#{mediatype})"
 		end
 	end
 
@@ -636,8 +664,10 @@ class DiskImage
 	end
 end
 
-# DIFC.X(.dim) ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm https://www.pc98.org/project/doc/dim.html
+# DIFC.X ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm https://www.pc98.org/project/doc/dim.html
 class DIM < DiskImage
+	IMAGE_FORMATNAME = "X68000 DIFC.X形式"
+	IMAGE_EXTNAMES = [".dim"]
 	HEADER_SIZE = 0x100
 
 	def self.image?(filedata)
@@ -732,8 +762,10 @@ class DIM < DiskImage
 	end
 end
 
-# T98Next R0(.nfd) ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
+# T98Next R0 ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
 class NFD_R0 < DiskImage
+	IMAGE_FORMATNAME = "T98-Next NFD r0形式"
+	IMAGE_EXTNAMES = [".nfd"]
 	HEADER_SIZE = 0x10a10
 
 	def self.image?(filedata)
@@ -808,8 +840,10 @@ class NFD_R0 < DiskImage
 	end
 end
 
-# T98Next R1(.nfd) ヘッダ(全体(960バイト)+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
+# T98Next R1 ヘッダ(全体(960バイト)+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
 class NFD_R1 < DiskImage
+	IMAGE_FORMATNAME = "T98-Next NFD r1形式"
+	IMAGE_EXTNAMES = [".nfd"]
 	HEADER_SIZE = 0x3c0
 
 	def self.image?(filedata)
@@ -947,8 +981,10 @@ class NFD_R1 < DiskImage
 	end
 end
 
-# SL9821(.slf) フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+# SL9821 フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
 class SLF < DiskImage
+	IMAGE_FORMATNAME = "SL9821形式"
+	IMAGE_EXTNAMES = [".slf"]
 	HEADER_SIZE = 16 + 32 * 80 * 2
 
 	def self.image?(filedata)
@@ -1040,8 +1076,10 @@ class SLF < DiskImage
 	end
 end
 
-# Virtual98(.fdd) ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
+# Virtual98 ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
 class V98FDD < DiskImage
+	IMAGE_FORMATNAME = "Virtual98形式"
+	IMAGE_EXTNAMES = [".fdd"]
 	HEADER_SIZE = 0xc3fc
 
 	def self.image?(filedata)
@@ -1124,8 +1162,10 @@ class V98FDD < DiskImage
 	end
 end
 
-# ERCVFD(.vfd) ヘッダ(64バイト)+セクタ毎に(ヘッダ(10バイト)+データ)
+# ERCVFD ヘッダ(64バイト)+セクタ毎に(ヘッダ(10バイト)+データ)
 class ERCVFD < DiskImage
+	IMAGE_FORMATNAME = "ERCACHE ERCVFD形式"
+	IMAGE_EXTNAMES = [".vfd"]
 	HEADER_SIZE = 0x40
 
 	def self.image?(filedata)
@@ -1135,7 +1175,7 @@ class ERCVFD < DiskImage
 	end
 
 	def load(filedata)
-		raise("Not implemented")
+		$stdout.print("  ERCVFD.load not implemented\n")
 	end
 
 	def dump
@@ -1143,8 +1183,10 @@ class ERCVFD < DiskImage
 	end
 end
 
-# DIP(.dip) ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
+# DIP ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
 class DIP < DiskImage
+	IMAGE_FORMATNAME = "DIP形式"
+	IMAGE_EXTNAMES = [".dip"]
 	HEADER_SIZE = 256
 
 	def self.image?(filedata)
@@ -1186,8 +1228,10 @@ class DIP < DiskImage
 	end
 end
 
-# D88(.d88) ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
+# D88 ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
 class D88 < DiskImage
+	IMAGE_FORMATNAME = "D88形式"
+	IMAGE_EXTNAMES = [".d88", ".d98", ".88d", ".98d"]
 	HEADER_SIZE = 0x2a0 # or 0x2b0
 
 	def self.image?(filedata)
@@ -1321,8 +1365,10 @@ class D88 < DiskImage
 	end
 end
 
-# Anex86(.fdi) ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
+# Anex86 ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
 class FDI < DiskImage
+	IMAGE_FORMATNAME = "Anex86形式"
+	IMAGE_EXTNAMES = [".fdi"]
 	HEADER_SIZE = 0x20 # コメント除く最小サイズ
 
 	def self.image?(filedata)
@@ -1391,8 +1437,10 @@ class FDI < DiskImage
 	end
 end
 
-# DCP/DCU(.dcu) ヘッダ(162バイト)+べたデータ https://www.pc98.org/project/doc/dcp.html https://melog.info/archives/2004/09/30/94#comment-27
+# DCP/DCU ヘッダ(162バイト)+べたデータ https://www.pc98.org/project/doc/dcp.html https://melog.info/archives/2004/09/30/94#comment-27
 class DCU < DiskImage
+	IMAGE_FORMATNAME = "DCP/DCU形式"
+	IMAGE_EXTNAMES = [".dcu", ".dcp"]
 	HEADER_SIZE = 1 + 160 + 1
 
 	def self.image?(filedata)
@@ -1524,8 +1572,10 @@ class DCU < DiskImage
 	end
 end
 
-# XDF(.xdf) べたデータ
+# XDF べたデータ
 class XDF < DiskImage
+	IMAGE_FORMATNAME = "べたイメージ"
+	IMAGE_EXTNAMES = [".xdf", ".dup", ".hdm", ".tfd", ".dsk", ".2hd", ".2dd", ".2d", ".1d"]
 	HEADER_SIZE = 0
 
 	def self.image?(filedata)
@@ -1568,73 +1618,11 @@ def fdimageid(filename)
 	$stdout.print("#{filename}:\n")
 	filedata = read_file(filename).freeze
 
-	case
-	# DIFC.X(.dim)
-	when DIM.image?(filedata)
-		$stdout.print("  💾 X68000 DIFC.X形式 [.dim]\n")
-		image = DIM.new(data:filedata)
+	image_class = DiskImage.guess_image_format(data:filedata)
+	if image_class
+		$stdout.print("  💾 #{image_class.image_formatname} #{image_class.image_extnames_s}\n")
+		image = image_class.new(data:filedata)
 		image.report_all
-
-	# T98Next R0(.nfd)
-	when NFD_R0.image?(filedata)
-		$stdout.print("  💾 T98-Next NFD r0形式 [.nfd]\n")
-		image = NFD_R0.new(data:filedata)
-		image.report_all
-
-	# T98Next R1(.nfd)
-	when NFD_R1.image?(filedata)
-		$stdout.print("  💾 T98-Next NFD r1形式 [.nfd]\n")
-		image = NFD_R1.new(data:filedata)
-		image.report_all
-
-	# SL9821(.slf)
-	when SLF.image?(filedata)
-		$stdout.print("  💾 SL9821形式 [.slf]\n")
-		image = SLF.new(data:filedata)
-		image.report_all
-
-	# Virtual98(.fdd)
-	when V98FDD.image?(filedata)
-		$stdout.print("  💾 Virtual98形式 [.fdd]\n")
-		image = V98FDD.new(data:filedata)
-		image.report_all
-
-	# ERCVFD(.vfd)
-	when ERCVFD.image?(filedata)
-		$stdout.print("  💾 ERCACHE ERCVFD形式 [.vfd]\n")
-		# image = ERCVFD.new(data:filedata)
-		# image.report_all
-
-	# DIP(.dip)
-	when DIP.image?(filedata)
-		$stdout.print("  💾 DIP形式 [.dip]\n")
-		image = DIP.new(data:filedata)
-		image.report_all
-
-	# D88(.d88)
-	when D88.image?(filedata)
-		$stdout.print("  💾 D88形式 [.d88 .d98 .88d .98d]\n")
-		image = D88.new(data:filedata)
-		image.report_all
-
-	# Anex86(.fdi)
-	when FDI.image?(filedata)
-		$stdout.print("  💾 Anex86形式 [.fdi]\n")
-		image = FDI.new(data:filedata)
-		image.report_all
-
-	# DCP/DCU(.dcu)
-	when DCU.image?(filedata)
-		$stdout.print("  💾 DCP/DCU形式 [.dcu .dcp]\n")
-		image = DCU.new(data:filedata)
-		image.report_all
-
-	# XDF(.xdf)
-	when XDF.image?(filedata)
-		$stdout.print("  💾 べたイメージ [.xdf .dup .hdm .tfd .dsk .2hd .2dd .2d .1d]\n")
-		image = XDF.new(data:filedata)
-		image.report_all
-
 	else
 		$stdout.print("  ❓ 形式不明(#{filedata.length}バイト)\n")
 	end
