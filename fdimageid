@@ -449,13 +449,13 @@ class DiskImage
 				count ||= 0
 				if sec == 0
 					if count > 0
-						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタが#{count}個あります\n")
+						$stdout.print("  トラック#{trkno+1}にR=#{sec}のセクタが#{count}個あります\n")
 					end
 				else
 					if count < 1
-						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタがありません\n")
+						$stdout.print("  トラック#{trkno+1}にR=#{sec}のセクタがありません\n")
 					elsif count > 1
-						$stdout.print("  トラック#{trkno+1}にRの値が#{sec}のセクタが#{count}個あります\n")
+						$stdout.print("  トラック#{trkno+1}にR=#{sec}のセクタが#{count}個あります\n")
 					end
 				end
 			end
@@ -797,6 +797,10 @@ class NFD_R0 < DiskImage
 		end
 		excess_data_check(filedata.length, data_offset)
 		sweep_niltrack
+
+		if byHead != heads
+			$stdout.print("  ヘッダ部のヘッド数と実際に使われているヘッド数が一致しません\n")
+		end
 	end
 
 	def dump
@@ -895,6 +899,10 @@ class NFD_R1 < DiskImage
 		end
 		excess_data_check(filedata.length, data_offset)
 		sweep_niltrack
+
+		if byHead != heads
+			$stdout.print("  ヘッダ部のヘッド数と実際に使われているヘッド数が一致しません\n")
+		end
 
 		sp_read_count = sp_read_count.to_a.sort_by{ |e| e[1] }.reverse
 		sp_read_count.each do |cmd, count|
