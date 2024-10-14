@@ -8,7 +8,6 @@
 #----------------------------------------------------------------
 
 require "optparse"
-require "pp"
 
 ProgName = "fdimageid"
 Version = "0.01"
@@ -1586,7 +1585,7 @@ class XDF < DiskImage
 		clear
 
 		geom = COMMON_GEOMETRIES.find{ |g| g[1] == filedata.length }
-		cyls, heads, nsecs, ssize = geom[3 .. 6]
+		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
 		if COMMON_GEOMETRIES.count{ |g| g[1] == filedata.length } >= 2
 			$stdout.print("  ジオメトリの候補が複数あります: #{geom[0]}と仮定します\n")
 		end
@@ -1595,15 +1594,16 @@ class XDF < DiskImage
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
+				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					s = Sector.new
 					s.c = cyl # シリンダは0オリジン
 					s.h = head # ヘッドは0オリジン
 					s.r = sec # レコードは1オリジン
-					s.n = (ssize / 128).bit_length - 1
-					s.data = filedata[offset, ssize] || ""
-					offset += ssize
+					s.n = (trk_ssize / 128).bit_length - 1
+					s.data = filedata[offset, trk_ssize] || ""
+					offset += trk_ssize
 					trk.sector << s
 				end
 			end
