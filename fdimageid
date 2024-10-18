@@ -10,7 +10,7 @@
 require "optparse"
 
 ProgName = "fdimageid"
-Version = "0.01"
+Version = "1.00"
 #=====dpk===== Copyright2024
 Copyright = "Copyright (c) 2024 by opa"
 #=====dpk=====
@@ -41,25 +41,35 @@ class DiskImage
 	IMAGE_FORMATNAME = "Abstruct floppy disk image"
 	IMAGE_EXTNAMES = []
 	COMMON_GEOMETRIES = [
-		# 0                     1        2      3    4     5     6     7
-		# description           length   media  cyls heads nsecs ssize ssize1
-		["2ED 2.88MB",         2949120, :"2hd",   80,    2,   36,  512],
-		["2HD 1.44MB PC/AT",   1474560, :"2hd",   80,    2,   18,  512],
-		["2HD 1.44MB 9sector", 1474560, :"2hd",   80,    2,    9, 1024],
-		["2HD 1.23MB PC98",    1261568, :"2hd",   77,    2,    8, 1024],
-		["2HC 1.2MB PC/AT",    1228800, :"2hd",   80,    2,   15,  512],
-		["2HD 1.04MB",         1064960, :"2hd",   80,    2,   26,  256],
-		["2HD 1.00MB",         1025024, :"2hd",   77,    2,   26,  256],
-		["2HD DISK BASIC",     1021696, :"2hd",   77,    2,   26,  256,  128],
-		["2DD 800KB",           819200, :"2dd",   80,    2,   10,  512],
-		["2DD 720KB MSX",       737280, :"2dd",   80,    2,    9,  512],
-		["2DD 640KB",           655360, :"2dd",   80,    2,    8,  512],
-		["2DD DISK BASIC",      655360, :"2dd",   80,    2,   16,  256],
-		["2D 360KB",            368640, :"2d",    40,    2,    9,  512],
-		["2D 320KB",            327680, :"2d",    40,    2,   16,  256],
-		["1DD 320KB",           327680, :"1dd",   80,    1,   16,  256],
-		["1D 160KB",            163840, :"1d",    40,    1,   16,  256],
+		# 0                   1        2      3    4     5     6     7
+		# description         length   media  cyls heads nsecs ssize ssize1
+		["2TD 9.12MB 88VA",  9338880, :"2td",  240,    2,   38,  512],
+		["2ED 2.88MB",       2949120, :"2ed",   80,    2,   36,  512],
+		["2HQ16 1.6MB",      1638400, :"2hd",   80,    2,   20,  512],
+		["2HQ 1.44MB PC/AT", 1474560, :"2hd",   80,    2,   18,  512],
+		["2HS/2HDE 1.44MB",  1474560, :"2hd",   80,    2,    9, 1024],
+		["2HD 1.23MB PC-98", 1261568, :"2hd",   77,    2,    8, 1024],
+		["2HDA 1.28MB",      1310720, :"2hd",   80,    2,    8, 1024],
+		["2HC 1.2MB PC/AT",  1228800, :"2hd",   80,    2,   15,  512],
+		["2HD 1.00MB",       1025024, :"2hd",   77,    2,   26,  256],
+		["2HD 1.04MB",       1064960, :"2hd",   80,    2,   26,  256],
+		["2HD Disk BASIC",   1021696, :"2hd",   77,    2,   26,  256,  128],
+		["2DD 800KB",         819200, :"2dd",   80,    2,   10,  512],
+		["2DD 720KB MSX",     737280, :"2dd",   80,    2,    9,  512],
+		["2DD 640KB",         655360, :"2dd",   80,    2,    8,  512],
+		["2DD Disk BASIC",    655360, :"2dd",   80,    2,   16,  256],
+		["2D 360KB",          368640, :"2d",    40,    2,    9,  512],
+		["1DD 360KB",         368640, :"1dd",   80,    1,   18,  256],
+		["2D 320KB",          327680, :"2d",    40,    2,   16,  256],
+		["1DD 320KB",         327680, :"1dd",   80,    1,   16,  256],
+		["1D 180KB",          184320, :"1d",    40,    1,   18,  256],
+		["1D 160KB",          163840, :"1d",    40,    1,   16,  256],
+		["1D 140KB",          143360, :"1d",    35,    1,   16,  256],
 	]
+
+	def COMMON_GEOMETRIES.find_desc(desc)
+		return find{ |g| g[0] == desc }
+	end
 
 	attr_accessor(:mediatype, :track, :writeprotect, :comment)
 
@@ -421,7 +431,7 @@ class DiskImage
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
 				end
 
-				ssize_n = 128 << s.n.clamp(..6)
+				ssize_n = 128 << s.n.clamp(0, 6)
 				ssize = s.ssize
 				if ssize_n != ssize
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{ssize}\n")
@@ -594,7 +604,7 @@ class DiskImage
 				$stdout.print("  シリンダ数が通常と異なります: 標準は#{g_cyls}(#{g_cyls * g_heads}トラック)\n")
 			end
 		else
-			$stdout.print("  一般的でないフォーマットがされています\n")
+			$stdout.print("  推定フォーマット: 不明 一般的でないフォーマットがされています\n")
 		end
 
 		if mfm_count.length >= 2
@@ -665,7 +675,7 @@ end
 
 # DIFC.X ヘッダ(256バイト)+べたデータ https://stdkmd.net/xeij/source/FDMedia.htm https://www.pc98.org/project/doc/dim.html
 class DIM < DiskImage
-	IMAGE_FORMATNAME = "X68000 DIFC.X形式"
+	IMAGE_FORMATNAME = "X68000 DIFC.X DIM形式"
 	IMAGE_EXTNAMES = [".dim"]
 	HEADER_SIZE = 0x100
 
@@ -708,13 +718,13 @@ class DIM < DiskImage
 			cyls, heads, nsecs, ssize = 0, 0, 0, 0
 		end
 
-		# ファイル作成時刻
+		# イメージ作成時刻
 		create_time = filedata[0xba, 8]
 		if create_time != "\0" * 8
 			create_time = create_time.unpack("CH2H2H2CH2H2H2").map{ |e| e.to_i }
 			create_time[0] = "日月火水木金土"[create_time[0]]
 			create_time[1] = 1980 + create_time[1]
-			$stdout.print("  ファイル作成時刻: " +
+			$stdout.print("  イメージ作成時刻: " +
 				"#{create_time[1]}/#{"%02d" % create_time[2]}/#{"%02d" % create_time[3]}(#{create_time[0]}) " +
 				"#{create_time[5]}:#{"%02d" % create_time[6]}:#{"%02d" % create_time[7]}(#{(create_time[4]==0) ? "12" : "24"}時間計)\n")
 		end
@@ -722,7 +732,7 @@ class DIM < DiskImage
 		# コメント
 		@comment = filedata[0xc2, 60].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
 
-		# オーバートラック
+		# トラック数
 		header_ntracks = filedata[0xff].to_byte
 		$stdout.print("  ヘッダのトラック数: #{header_ntracks}トラック\n")  if header_ntracks > 0
 
@@ -980,9 +990,9 @@ class NFD_R1 < DiskImage
 	end
 end
 
-# SL9821 フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html
+# SL9821 フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html https://www.satotomi.com/sl9821/sl9821.html
 class SLF < DiskImage
-	IMAGE_FORMATNAME = "SL9821形式"
+	IMAGE_FORMATNAME = "SL9821 SLF形式"
 	IMAGE_EXTNAMES = [".slf"]
 	HEADER_SIZE = 16 + 32 * 80 * 2
 
@@ -1075,9 +1085,9 @@ class SLF < DiskImage
 	end
 end
 
-# Virtual98 ヘッダ+可変長データ https://www.pc98.org/project/doc/fdd.html
+# Virtual98 固定長ヘッダ(50172バイト)+可変長データ https://www.pc98.org/project/doc/fdd.html
 class V98FDD < DiskImage
-	IMAGE_FORMATNAME = "Virtual98形式"
+	IMAGE_FORMATNAME = "Virtual98 FDD形式"
 	IMAGE_EXTNAMES = [".fdd"]
 	HEADER_SIZE = 0xc3fc
 
@@ -1182,7 +1192,7 @@ class ERCVFD < DiskImage
 	end
 end
 
-# DIP ヘッダ(256バイト)+べたデータ https://www.pc98.org/project/doc/dip.html
+# DIP ヘッダ(256バイト)+べたデータ(1261568バイト) https://www.pc98.org/project/doc/dip.html
 class DIP < DiskImage
 	IMAGE_FORMATNAME = "DIP形式"
 	IMAGE_EXTNAMES = [".dip"]
@@ -1218,7 +1228,6 @@ class DIP < DiskImage
 				end
 			end
 		end
-		excess_data_check(filedata.length, offset)
 		sweep_niltrack
 	end
 
@@ -1227,10 +1236,10 @@ class DIP < DiskImage
 	end
 end
 
-# D88 ディスクヘッダ+セクタ毎に(ヘッダ+データ) https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
+# D88 ディスクヘッダ+セクタ毎にヘッダ+データ https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
 class D88 < DiskImage
 	IMAGE_FORMATNAME = "D88形式"
-	IMAGE_EXTNAMES = [".d88", ".d98", ".88d", ".98d"]
+	IMAGE_EXTNAMES = [".d88", ".d98", ".d77", ".d68", ".88d", ".98d", ".77d", ".68d"]
 	HEADER_SIZE = 0x2a0 # or 0x2b0
 
 	def self.image?(filedata)
@@ -1238,7 +1247,7 @@ class D88 < DiskImage
 
 		return filedata[0x10, 10] == "\0" * 10 &&
 			[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
-			filedata.length == filedata[0x1c, 4].to_dword
+			filedata[0x1c, 4].to_dword == filedata.length
 	end
 
 	def load(filedata)
@@ -1366,7 +1375,7 @@ end
 
 # Anex86 ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
 class FDI < DiskImage
-	IMAGE_FORMATNAME = "Anex86形式"
+	IMAGE_FORMATNAME = "Anex86 FDI形式"
 	IMAGE_EXTNAMES = [".fdi"]
 	HEADER_SIZE = 0x20 # コメント除く最小サイズ
 
@@ -1440,129 +1449,78 @@ end
 class DCU < DiskImage
 	IMAGE_FORMATNAME = "DCP/DCU形式"
 	IMAGE_EXTNAMES = [".dcu", ".dcp"]
-	HEADER_SIZE = 1 + 160 + 1
+	HEADER_SIZE = 1 + 161
+	GEOMETRIES = {
+		0x01 => COMMON_GEOMETRIES.find_desc("2HD 1.23MB PC-98"), # 1024byte x 8sector
+		0x02 => COMMON_GEOMETRIES.find_desc("2HC 1.2MB PC/AT"),  # 512byte x 15sector
+		0x03 => COMMON_GEOMETRIES.find_desc("2HQ 1.44MB PC/AT"), # 512byte x 18sector
+		0x04 => COMMON_GEOMETRIES.find_desc("2DD 640KB"),        # 512byte x 8sector
+		0x05 => COMMON_GEOMETRIES.find_desc("2DD 720KB MSX"),    # 512byte x 9sector
+		0x08 => COMMON_GEOMETRIES.find_desc("2HS/2HDE 1.44MB"),  # 1024byte x 9sector
+		0x11 => COMMON_GEOMETRIES.find_desc("2HD Disk BASIC"),
+		0x19 => COMMON_GEOMETRIES.find_desc("2DD Disk BASIC"),
+		0x21 => COMMON_GEOMETRIES.find_desc("2HD 1.04MB"),       # 256byte x 26sector
+	}
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
-		track_map = filedata[1, 160].to_bytes
-		track_map.each do |t|
-			if t != 0 && t != 1
-				return false
-			end
+		geom = GEOMETRIES[filedata[0].to_byte] # media_type
+		return false  if !geom
+		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
+
+		return false  if filedata[1, 161].to_bytes.any?{ |t| !(t == 0 || t == 1) }
+		track_bound = filedata[1, 161].to_bytes.rindex(1)
+		track_count = filedata[1, track_bound].to_bytes.count(1) # track_flag
+
+		calc_datasize_s = HEADER_SIZE + track_count * nsecs * ssize
+		calc_datasize_a = HEADER_SIZE + cyls * heads * nsecs * ssize
+		if ssize1
+			calc_datasize_s -= nsecs * (ssize - ssize1)
+			calc_datasize_a -= nsecs * (ssize - ssize1)
 		end
 
-		media_type = filedata[0].to_byte
-		case [media_type, filedata.length]
-		when [0x01, HEADER_SIZE + (77 * 2 * 8 * 1024)] # 2HD 1.25MB 2HS
-			return true
-		when [0x02, HEADER_SIZE + (80 * 2 * 15 * 512)] # 2HD 1.21MB 2HC
-			return true
-		when [0x03, HEADER_SIZE + (80 * 2 * 18 * 512)] # 2HQ 1.44MB 2HDE
-			return true
-		when [0x04, HEADER_SIZE + (80 * 2 * 8 * 512)] # 2DD 640KB
-			return true
-		when [0x05, HEADER_SIZE + (80 * 2 * 9 * 512)] # 2DD 720KB
-			return true
-		when [0x08, HEADER_SIZE + (80 * 2 * 9 * 1024)] # 2HD 1.44MB
-			return true
-		when [0x11, HEADER_SIZE + (1*26*128 + 153*26*256)] # 2HD Disk BASIC
-			return true
-		when [0x19, HEADER_SIZE + (80 * 2 * 16 * 256)] # 2DD Disk BASIC
-			return true
-		when [0x21, HEADER_SIZE + (80 * 2 * 26 * 256)] # 2HD 26sector
-			return true
-		end
-
-		return false
+		return filedata.length == calc_datasize_s || filedata.length == calc_datasize_a
 	end
 
 	def load(filedata)
 		clear
 
 		media_type = filedata[0].to_byte
-		case media_type
-		when 0x01 # 2HD 1.25MB 2HS
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 77, 2, 8, 1024
-		when 0x02 # 2HD 1.21MB 2HC
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 15, 512
-		when 0x03 # 2HQ 1.44MB 2HDE
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 18, 512
-		when 0x04 # 2DD 640KB
-			@mediatype = :"2dd"
-			cyls, heads, nsecs, ssize = 80, 2, 8, 512
-		when 0x05 # 2DD 720KB
-			@mediatype = :"2dd"
-			cyls, heads, nsecs, ssize = 80, 2, 9, 512
-		when 0x08 # 2HD 1.44MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
-		when 0x11 # 2HD Disk BASIC
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize, ssize1 = 77, 2, 26, 256, 128
-		when 0x19 # 2DD Disk BASIC
-			@mediatype = :"2dd"
-			cyls, heads, nsecs, ssize = 80, 2, 16, 256
-		when 0x21 # 2HD 26sector
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 26, 256
-		else
-			$stdout.print("  メディアタイプ不明: #{media_type.to_hex}\n")
-			@mediatype = :unknown
-			cyls, heads, nsecs, ssize = 0, 0, 0, 0
-		end
+		geom = GEOMETRIES[media_type]
+		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
 
-		# トラック保存状態
-		track_flag = filedata[1, 160].to_bytes
-		track_flag.each.with_index do |flag, trkno|
-			if flag == 0 || flag == 1
-				# OK:NOP
-			else
-				$stdout.print("  トラック#{trkno+1}のデータ有無フラグが不正: #{flag}\n")
-			end
-		end
+		track_bound = filedata[1, 161].to_bytes.rindex(1)
+		track_flag = filedata[1, track_bound].to_bytes
+		track_count = track_flag.count(1)
 
-		# 全トラック格納フラグ
-		all_cylinders_stored = filedata[0xa1].to_byte
-		case all_cylinders_stored
-		when 0
-			# OK:NOP
-		when 1
-			$stdout.print("  全トラック格納フラグ: ON\n")
-			(0 ... cyls * heads).each do |trkno|
-				track_flag[trkno] = 1
-			end
-		else
-			$stdout.print("  全トラック格納フラグ不正: #{all_cylinders_stored}\n")
-		end
+		calc_datasize_a = HEADER_SIZE + cyls * heads * nsecs * ssize
+		calc_datasize_a -= nsecs * (ssize - ssize1)  if ssize1
+		track_flag.fill(1)  if filedata.length == calc_datasize_a
 
 		# データ本体
 		offset = HEADER_SIZE
 		track_flag.each.with_index do |flag, trkno|
-			case flag
-			when 0 # なし
-				# NOP
-			when 1 # あり
-				cyl = trkno / heads
-				head = trkno % heads
+			cyl = trkno / heads
+			head = trkno % heads
 
-				trk = (@track[trkno] ||= Track.new)
-				(1 .. nsecs).each do |sec|
-					s = Sector.new
-					s.c = cyl # シリンダは0オリジン
-					s.h = head # ヘッドは0オリジン
-					s.r = sec # レコードは1オリジン
-					s.n = (ssize / 128).bit_length - 1
+			trk = (@track[trkno] ||= Track.new)
+			(1 .. nsecs).each do |sec|
+				s = Sector.new
+				s.c = cyl # シリンダは0オリジン
+				s.h = head # ヘッドは0オリジン
+				s.r = sec # レコードは1オリジン
+				s.n = (ssize / 128).bit_length - 1
+				case flag
+				when 0 # なし
+					s.data = "\xe5".force_encoding(Encoding::BINARY) * ssize
+				when 1 # あり
 					s.data = filedata[offset, ssize] || ""
 					offset += ssize
-					trk.sector << s
 				end
+				trk.sector << s
 			end
 		end
-		excess_data_check(filedata.length, offset)
 		sweep_niltrack
 	end
 
@@ -1574,7 +1532,7 @@ end
 # XDF べたデータ
 class XDF < DiskImage
 	IMAGE_FORMATNAME = "べたイメージ"
-	IMAGE_EXTNAMES = [".xdf", ".dup", ".hdm", ".tfd", ".dsk", ".2hd", ".2dd", ".2d", ".1d"]
+	IMAGE_EXTNAMES = [".xdf", ".tfd", ".vfd", ".dsk", ".dup", ".flp", ".hdb", ".hdm", ".2hd", ".2dd", ".2d", ".1d"]
 	HEADER_SIZE = 0
 
 	def self.image?(filedata)
@@ -1586,6 +1544,7 @@ class XDF < DiskImage
 
 		geom = COMMON_GEOMETRIES.find{ |g| g[1] == filedata.length }
 		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
+
 		if COMMON_GEOMETRIES.count{ |g| g[1] == filedata.length } >= 2
 			$stdout.print("  ジオメトリの候補が複数あります: #{geom[0]}と仮定します\n")
 		end
@@ -1594,7 +1553,7 @@ class XDF < DiskImage
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
-				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize
+				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize # 最初のトラックだけセクタ長が異なる場合がある
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					s = Sector.new
@@ -1608,7 +1567,6 @@ class XDF < DiskImage
 				end
 			end
 		end
-		excess_data_check(filedata.length, offset)
 		sweep_niltrack
 	end
 
@@ -1742,6 +1700,11 @@ def main(args)
 	args.each do |an_arg|
 		if !File.exist?(an_arg)
 			$stderr.print("#{ProgName}: File not found: #{an_arg}\n")
+			break
+		end
+
+		if !File.file?(an_arg)
+			$stderr.print("#{ProgName}: Not a file: #{an_arg}\n")
 			break
 		end
 
