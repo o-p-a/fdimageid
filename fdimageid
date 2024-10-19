@@ -187,6 +187,12 @@ class DiskImage
 			return @sector.sum{ |s| s.ssize }
 		end
 
+		# セクタのデータ(をCHR順に連結したもの)
+		def data
+			all_sectors = @sector.sort_by{ |s| [s.c, s.h, s.r] }
+			return all_sectors.map{ |s| s.data }.join
+		end
+
 		# 全バイトが同一値であるか
 		def is_uniform?(test_value=nil)
 			return nil  if @sector.empty?
@@ -327,6 +333,11 @@ class DiskImage
 	# 総データサイズ
 	def total_size
 		return @track.sum{ |t| t.total_size }
+	end
+
+	# セクタのデータ(をトラック順>CHR順に連結したもの)
+	def data
+		return @track.map{ |t| t.data }.join
 	end
 
 	# (内部用)@track内のnil要素をは空のTrackで埋める
@@ -1560,8 +1571,7 @@ class XDF < DiskImage
 	end
 
 	def dump
-		all_sectors = @track.map{ |t| t.sector }.flatten.sort_by{ |s| [s.c, s.h, s.r] }
-		return all_sectors.map{ |s| s.data }.join
+		return data
 	end
 end
 
