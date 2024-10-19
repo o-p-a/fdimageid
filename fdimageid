@@ -426,6 +426,7 @@ class DiskImage
 		# セクタ情報の統計を算出
 		nsecs_count = {}
 		ssize_count = {}
+		skip_factor = nil
 		mfm_count = {}
 		ddam_count = 0
 		status_count = {}
@@ -460,10 +461,9 @@ class DiskImage
 					$stdout.print("  トラック#{trkno+1}のセクタのRの値が異常です: #{s.r}\n")
 				end
 
-				# インターリーブしてるディスクでは普通に異なるのでコメントアウト
-				# if s.r != sec + 1
-				# 	$stdout.print("  トラック#{trkno+1}のセクタのRの値が特殊です: R:#{s.r} (!=#{sec+1})\n")
-				# end
+				if !skip_factor && s.r == 2
+					skip_factor = sec - 1
+				end
 
 				if s.n > 6
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
@@ -649,6 +649,10 @@ class DiskImage
 			end
 		else
 			$stdout.print("  推定フォーマット: 不明 一般的でないフォーマットがされています\n")
+		end
+
+		if skip_factor && skip_factor > 0
+			$stdout.print("  インターリーブフォーマットされています(スキップファクタ=#{skip_factor})\n")
 		end
 
 		if mfm_count.length >= 2
