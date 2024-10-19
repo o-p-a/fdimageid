@@ -778,7 +778,7 @@ class DIM < DiskImage
 		end
 
 		# コメント
-		@comment = filedata[0xc2, 60].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0xc2, 60].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 
 		# トラック数
 		header_ntracks = filedata[0xff].to_byte
@@ -830,7 +830,7 @@ class NFD_R0 < DiskImage
 	def load(filedata)
 		clear
 
-		@comment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0x10, 0x100].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
 		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
 		byHead = filedata[0x10 + 0x100 + 5].to_byte
@@ -904,7 +904,7 @@ class NFD_R1 < DiskImage
 	def load(filedata)
 		clear
 
-		@comment = filedata[0x10, 0x100].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0x10, 0x100].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
 		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
 		byHead = filedata[0x10 + 0x100 + 5].to_byte
@@ -1133,7 +1133,7 @@ class V98FDD < DiskImage
 		clear
 
 		@mediatype = :"2hd" # 違ったらあとでリセット
-		@comment = filedata[0x8, 0x80].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0x8, 0x80].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
 		special_read_drive = filedata[0x8a, 2].to_word
 
@@ -1217,18 +1217,19 @@ class DIP < DiskImage
 	IMAGE_FORMATNAME = "DIP形式"
 	IMAGE_EXTNAMES = [".dip"]
 	HEADER_SIZE = 256
+	MAGICWORD = "\x01\x08\x00\x13\x41\x00\x01\x00"
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
-		return filedata[0, 8] == "\x01\x08\x00\x13\x41\x00\x01\x00" &&
+		return filedata[0, 8] == MAGICWORD &&
 			filedata.length == HEADER_SIZE + (77 * 2 * 8 * 1024)
 	end
 
 	def load(filedata)
 		clear
 
-		@comment = filedata[0x10, 0xf0].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0x10, 0xf0].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 
 		cyls, heads, nsecs, ssize = 77, 2, 8, 1024
 		offset = HEADER_SIZE
@@ -1249,6 +1250,17 @@ class DIP < DiskImage
 			end
 		end
 		sweep_niltrack
+	end
+
+	def dump
+		return nil  if total_size != 77 * 2 * 8 * 1024
+
+		header = [
+			MAGICWORD,
+			@comment.encode(Encoding::WINDOWS_31J),
+		].pack("a16a240")
+
+		return header + data
 	end
 end
 
@@ -1294,7 +1306,7 @@ class D88 < DiskImage
 		@writeprotect = (filedata[0x1a].to_byte == 0) ? false : true
 
 		# Disk name / comment
-		@comment = filedata[0, 16].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0, 16].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 
 		# Track data
 		track_offsets = filedata[0x20, 4 * 164].to_dwords
@@ -1420,7 +1432,7 @@ class FDI < DiskImage
 		ssize, nsecs, heads, cyls = filedata[0x10, 4 * 4].to_dwords
 		$stdout.print("  ヘッダ情報: #{cyls}シリンダ x #{heads}ヘッド x #{nsecs}セクタ x #{ssize}バイト\n")
 
-		@comment = filedata[0x20, headersize - 0x20].force_encoding("WINDOWS-31J").encode.sub(/\0+$/, "")
+		@comment = filedata[0x20, headersize - 0x20].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 
 		calc_datasize = cyls * heads * nsecs * ssize
 		if calc_datasize != datasize
