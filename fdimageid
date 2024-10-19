@@ -726,12 +726,20 @@ class DIM < DiskImage
 	IMAGE_FORMATNAME = "X68000 DIFC.X DIM形式"
 	IMAGE_EXTNAMES = [".dim"]
 	HEADER_SIZE = 0x100
+	GEOMETRIES = {
+		0x00 => COMMON_GEOMETRIES.find_desc("2HD 1.23MB PC-98"),
+		0x01 => COMMON_GEOMETRIES.find_desc("2HS/2HDE 1.44MB"), # 2HS
+		0x02 => COMMON_GEOMETRIES.find_desc("2HC 1.2MB PC/AT"),
+		0x03 => COMMON_GEOMETRIES.find_desc("2HS/2HDE 1.44MB"), # 2HDE
+		0x09 => COMMON_GEOMETRIES.find_desc("2HQ 1.44MB PC/AT"),
+		0x11 => COMMON_GEOMETRIES.find_desc("2HD Disk BASIC"),
+	}
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
 		return filedata[171, 15] == "DIFC HEADER  \0\0" &&
-			[0x00, 0x01, 0x02, 0x03, 0x09, 0x11].include?(filedata[0].to_byte)
+			GEOMETRIES[filedata[0].to_byte]
 	end
 
 	def load(filedata)
@@ -743,28 +751,8 @@ class DIM < DiskImage
 		$stdout.print("  DIFC.xバージョン: #{difc_version_s}\n")
 
 		# メディアタイプ
-		media_byte = filedata[0].to_byte
-		case media_byte
-		when 0x00 # 2HD 1.23MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 77, 2, 8, 1024
-		when 0x01 # 2HS 1.44MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
-		when 0x02 # 2HC 1.2MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 15, 512
-		when 0x03 # 2HDE 1.44MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 9, 1024
-		when 0x09 # 2HQ 1.44MB
-			@mediatype = :"2hd"
-			cyls, heads, nsecs, ssize = 80, 2, 18, 512
-		else
-			$stdout.print("  メディアタイプ不明: #{media_byte.to_hex}\n")
-			@mediatype = :unknown
-			cyls, heads, nsecs, ssize = 0, 0, 0, 0
-		end
+		geom = GEOMETRIES[filedata[0].to_byte] # media byte
+		@mediatype, cyls, heads, nsecs, ssize, ssize1 = geom[2 .. 7]
 
 		# イメージ作成時刻
 		create_time = filedata[0xba, 8]
@@ -794,16 +782,16 @@ class DIM < DiskImage
 			when 1 # あり
 				cyl = trkno / heads
 				head = trkno % heads
-
+				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize # 最初のトラックだけセクタ長が異なる場合
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					s = Sector.new
 					s.c = cyl # シリンダは0オリジン
 					s.h = head # ヘッドは0オリジン
 					s.r = sec # レコードは1オリジン
-					s.n = (ssize / 128).bit_length - 1
-					s.data = filedata[offset, ssize] || ""
-					offset += ssize
+					s.n = (trk_ssize / 128).bit_length - 1
+					s.data = filedata[offset, trk_ssize] || ""
+					offset += trk_ssize
 					trk.sector << s
 				end
 			else
@@ -1485,7 +1473,7 @@ class DCU < DiskImage
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
-		geom = GEOMETRIES[filedata[0].to_byte] # media_type
+		geom = GEOMETRIES[filedata[0].to_byte] # media type
 		return false  if !geom
 		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
 
@@ -1506,8 +1494,7 @@ class DCU < DiskImage
 	def load(filedata)
 		clear
 
-		media_type = filedata[0].to_byte
-		geom = GEOMETRIES[media_type]
+		geom = GEOMETRIES[filedata[0].to_byte] # media type
 		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
 
 		track_bound = filedata[1, 161].to_bytes.rindex(1)
@@ -1523,20 +1510,20 @@ class DCU < DiskImage
 		track_flag.each.with_index do |flag, trkno|
 			cyl = trkno / heads
 			head = trkno % heads
-
+			trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize # 最初のトラックだけセクタ長が異なる場合
 			trk = (@track[trkno] ||= Track.new)
 			(1 .. nsecs).each do |sec|
 				s = Sector.new
 				s.c = cyl # シリンダは0オリジン
 				s.h = head # ヘッドは0オリジン
 				s.r = sec # レコードは1オリジン
-				s.n = (ssize / 128).bit_length - 1
+				s.n = (trk_ssize / 128).bit_length - 1
 				case flag
 				when 0 # なし
-					s.data = "\xe5".force_encoding(Encoding::BINARY) * ssize
+					s.data = "\xe5".force_encoding(Encoding::BINARY) * trk_ssize
 				when 1 # あり
-					s.data = filedata[offset, ssize] || ""
-					offset += ssize
+					s.data = filedata[offset, trk_ssize] || ""
+					offset += trk_ssize
 				end
 				trk.sector << s
 			end
@@ -1569,7 +1556,7 @@ class XDF < DiskImage
 		(0 ... cyls).each do |cyl|
 			(0 ... heads).each do |head|
 				trkno = cyl * heads + head
-				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize # 最初のトラックだけセクタ長が異なる場合がある
+				trk_ssize = (ssize1 && trkno == 0) ? ssize1 : ssize # 最初のトラックだけセクタ長が異なる場合
 				trk = (@track[trkno] ||= Track.new)
 				(1 .. nsecs).each do |sec|
 					s = Sector.new
