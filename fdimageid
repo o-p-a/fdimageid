@@ -10,7 +10,7 @@
 require "optparse"
 
 ProgName = "fdimageid"
-Version = "1.00"
+Version = "1.01"
 #=====dpk===== Copyright2024
 Copyright = "Copyright (c) 2024 by opa"
 #=====dpk=====
@@ -29,20 +29,12 @@ class Integer
 	def to_hex;	"#{to_s(16)}h";	end
 end
 
-def read_file(filename, offset=0, length=nil)
-	return IO.binread(filename, length, offset)
-end
-
-def write_file(filename, data)
-	return IO.binwrite(filename, data)
-end
-
 class DiskImage
 	IMAGE_FORMATNAME = "Abstruct floppy disk image"
 	IMAGE_EXTNAMES = []
 	COMMON_GEOMETRIES = [
-		# 0                   1        2      3    4     5     6     7
-		# description         length   media  cyls heads nsecs ssize ssize1
+		# 0                     1      2      3    4     5     6     7
+		# description           size   media  cyls heads nsecs ssize ssize1
 		["2TD 9.12MB 88VA",  9338880, :"2td",  240,    2,   38,  512],
 		["2ED 2.88MB",       2949120, :"2ed",   80,    2,   36,  512],
 		["2HQ16 1.6MB",      1638400, :"2hd",   80,    2,   20,  512],
@@ -71,7 +63,7 @@ class DiskImage
 		return find{ |g| g[0] == desc }
 	end
 
-	attr_accessor(:mediatype, :track, :writeprotect, :comment)
+	attr_accessor(:track, :mediatype, :writeprotect, :comment)
 
 	def self.image_formatname
 		return self::IMAGE_FORMATNAME
@@ -86,33 +78,14 @@ class DiskImage
 	end
 
 	def self.guess_image_format(filename:nil, data:nil)
-		if filename
-			data = read_file(filename)
-		end
-
-		[DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, DIP, D88, FDI, DCU, XDF].each do |c|
-			if c.image?(data)
-				return c
-			end
-		end
-
-		return nil
+		data = IO.binread(filename)  if filename
+		return [DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, DIP, D88, FDI, DCU, XDF].find{ |c| c.image?(data) }
 	end
 
 	def self.mediatype_s(mediatype)
 		case mediatype
-		when nil
-			return ""
-		when :"1d"
-			return "1D"
-		when :"1dd"
-			return "1DD"
-		when :"2d"
-			return "2D"
-		when :"2dd"
-			return "2DD"
-		when :"2hd"
-			return "2HD"
+		when nil, :"1d", :"1dd", :"2d", :"2dd", :"2hd", :"2ed", :"2td"
+			return mediatype.to_s.upcase
 		when :unknown
 			return "不明"
 		else
@@ -122,19 +95,13 @@ class DiskImage
 
 	def initialize(filename:nil, data:nil)
 		clear
-
-		if filename
-			data = read_file(filename)
-		end
-
-		if data
-			load(data)
-		end
+		data = IO.binread(filename)  if filename
+		load(data)  if data
 	end
 
 	def clear
-		@mediatype = nil # :"1d", :"1dd", :"2d", :"2dd", :"2hd", :unknown
-		@track = [] # 要素はTrack(要素がnilのことはない)
+		@track = []
+		@mediatype = nil # :"1d", :"1dd", :"2d", :"2dd", :"2hd", :"2ed", :"2td", :unknown
 		@writeprotect = nil # true:Write Protected false:Writeable
 		@comment = nil
 		return self
@@ -142,8 +109,8 @@ class DiskImage
 
 	def to_h
 		return {
-			mediatype: @mediatype,
 			track: @track.map{ |t| t.to_h },
+			mediatype: @mediatype,
 			writeprotect: @writeprotect,
 			comment: @comment,
 		}
@@ -157,7 +124,12 @@ class DiskImage
 		end
 
 		def clear
-			@sector = [] # 要素はSector(要素がnilのことはない)
+			@sector = []
+			return self
+		end
+
+		def copy(another)
+			@sector = another.sector.map{ |s| Sector.new.copy(s) }
 			return self
 		end
 
@@ -243,6 +215,22 @@ class DiskImage
 			@st1 = nil		# ST1
 			@st2 = nil		# ST2
 			@pda = nil		# PDA 0x90:1.2M 0x30:1.44M 0x10:640K
+			return self
+		end
+
+		def copy(another)
+			@data = another.data.dup
+			@c = another.c
+			@h = another.h
+			@r = another.r
+			@n = another.n
+			@mfm = another.mfm
+			@ddam = another.ddam
+			@status = another.status
+			@st0 = another.st0
+			@st1 = another.st1
+			@st2 = another.st2
+			@pda = another.pda
 			return self
 		end
 
@@ -341,10 +329,6 @@ class DiskImage
 		return @track.sum{ |t| t.total_size }
 	end
 
-	# 全データをCHRN順に連結したもの
-	def whole_data
-	end
-
 	# (内部用)@track内のnil要素をは空のTrackで埋める
 	def sweep_niltrack
 		@track.map!{ |t| t || Track.new }
@@ -361,6 +345,49 @@ class DiskImage
 		end
 	end
 	protected(:excess_data_check)
+
+	# イメージファイルのデータをselfにロード
+	def load(filedata)
+		$stderr.print("#{ProgName}: #{self.class.name}.load not implemented\n")
+	end
+
+	# selfをイメージファイルのデータにシリアライズして返却
+	def dump
+		$stderr.print("#{ProgName}: #{self.class.name}.dump not implemented\n")
+	end
+
+	# 他のDiskImageインスタンスのデータをselfにロード
+	def copy(another)
+		clear
+
+		@mediatype = another.mediatype
+		@track = another.track.map{ |t| Track.new.copy(t) }
+		@writeprotect = another.writeprotect
+		@comment = another.comment
+	end
+
+	# 一般的なフォーマットかどうか
+	def common_geometry?
+		w_size, w_media, w_cyls, w_heads, w_nsecs, w_ssize = total_size, mediatype, cyls, heads, nsectors, ssize
+
+		COMMON_GEOMETRIES.each do |g|
+			g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
+
+			if w_size == g_size && (w_media.nil? || w_media == g_media) && w_cyls == g_cyls && w_heads == g_heads && w_nsecs == g_nsecs
+				if g_ssize1
+					if track[0].ssize == g_ssize1 && track[1].ssize == g_ssize
+						return g # ≒ true
+					end
+				else
+					if w_ssize == g_ssize
+						return g # ≒ true
+					end
+				end
+			end
+		end
+
+		return nil # ≒ false
+	end
 
 	# 情報を表示
 	def report_all
@@ -554,45 +581,51 @@ class DiskImage
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} x #{ssize_s} = #{wk_total_size}バイト(#{total_size_kb})\n")
 
 		# 推定フォーマット
-		guess_format = nil
-		if !guess_format # 普通に全要素をチェック
+		guess_format = common_geometry? # 普通に厳密チェック
+		if !guess_format # セクタ数、セクタ長について代表値を使ったチェック
 			COMMON_GEOMETRIES.each.with_index do |g, i|
-				g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g
+				g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
 				wk_media = @mediatype || g_media
-				if g_ssize1
-					if wk_total_size == g_len && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
-						guess_format = i
-						break
-					end
-				else
-					if wk_total_size == g_len && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize
-						guess_format = i
-						break
+
+				if wk_total_size == g_size && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs
+					if g_ssize1
+						if wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+							guess_format = g
+							break
+						end
+					else
+						if wk_ssize2 == g_ssize
+							guess_format = g
+							break
+						end
 					end
 				end
 			end
 		end
-		if !guess_format # 総データサイズとシリンダ数を曖昧検索
+		if !guess_format # 総データサイズとシリンダ数も曖昧検索
 			COMMON_GEOMETRIES.each.with_index do |g, i|
-				g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g
+				g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[2 .. 7]
 				wk_media = @mediatype || g_media
 				cyls_ok = ((wk_cyls <= 45 && g_cyls <= 45) || (wk_cyls > 45 && g_cyls > 45)) ? true : false
-				if g_ssize1
-					if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
-						guess_format = i
-						break
-					end
-				else
-					if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs && wk_ssize2 == g_ssize
-						guess_format = i
-						break
+
+				if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs
+					if g_ssize1
+						if wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+							guess_format = g
+							break
+						end
+					else
+						if wk_ssize2 == g_ssize
+							guess_format = g
+							break
+						end
 					end
 				end
 			end
 		end
 
 		if guess_format
-			g_desc, g_len, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = COMMON_GEOMETRIES[guess_format]
+			g_desc, g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = guess_format
 
 			$stdout.print("  推定フォーマット: #{g_desc}\n")
 
@@ -765,10 +798,6 @@ class DIM < DiskImage
 		excess_data_check(filedata.length, offset)
 		sweep_niltrack
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # T98Next R0 ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
@@ -842,10 +871,6 @@ class NFD_R0 < DiskImage
 		if byHead != heads
 			$stdout.print("  ヘッダ部のヘッド数と実際に使われているヘッド数が一致しません\n")
 		end
-	end
-
-	def dump
-		raise("Not implemented")
 	end
 end
 
@@ -984,10 +1009,6 @@ class NFD_R1 < DiskImage
 			$stdout.print("  特殊読み込みデータが存在します: #{cmd_s}: #{count}個\n")
 		end
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # SL9821 フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html https://www.satotomi.com/sl9821/sl9821.html
@@ -1079,10 +1100,6 @@ class SLF < DiskImage
 		end
 		sweep_niltrack
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # Virtual98 固定長ヘッダ(50172バイト)+可変長データ https://www.pc98.org/project/doc/fdd.html
@@ -1165,10 +1182,6 @@ class V98FDD < DiskImage
 			end while(next_point != 0xffffffff && next_point != 0)
 		end
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # ERCVFD ヘッダ(64バイト)+セクタ毎に(ヘッダ(10バイト)+データ)
@@ -1181,14 +1194,6 @@ class ERCVFD < DiskImage
 		return false  if filedata.length < HEADER_SIZE
 
 		return filedata[0, 8] == "ERCVFD01"
-	end
-
-	def load(filedata)
-		$stdout.print("  ERCVFD.load not implemented\n")
-	end
-
-	def dump
-		raise("Not implemented")
 	end
 end
 
@@ -1229,10 +1234,6 @@ class DIP < DiskImage
 			end
 		end
 		sweep_niltrack
-	end
-
-	def dump
-		raise("Not implemented")
 	end
 end
 
@@ -1367,10 +1368,6 @@ class D88 < DiskImage
 			end
 		end
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # Anex86 ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
@@ -1438,10 +1435,6 @@ class FDI < DiskImage
 		end
 		excess_data_check(filedata.length, offset)
 		sweep_niltrack
-	end
-
-	def dump
-		raise("Not implemented")
 	end
 end
 
@@ -1523,10 +1516,6 @@ class DCU < DiskImage
 		end
 		sweep_niltrack
 	end
-
-	def dump
-		raise("Not implemented")
-	end
 end
 
 # XDF べたデータ
@@ -1571,81 +1560,81 @@ class XDF < DiskImage
 	end
 
 	def dump
-		raise("Not implemented")
+		all_sectors = @track.map{ |t| t.sector }.flatten.sort_by{ |s| [s.c, s.h, s.r] }
+		return all_sectors.map{ |s| s.data }.join
 	end
 end
 
 def fdimageid(filename)
 	$stdout.print("#{filename}:\n")
-	filedata = read_file(filename).freeze
+	filedata = IO.binread(filename)
 
 	image_class = DiskImage.guess_image_format(data:filedata)
-	if image_class
-		$stdout.print("  💾 #{image_class.image_formatname} #{image_class.image_extnames_s}\n")
-		image = image_class.new(data:filedata)
-		image.report_all
-	else
+	if !image_class
 		$stdout.print("  ❓ 形式不明(#{filedata.length}バイト)\n")
-	end
-end
-
-# .dim → .xdf 変換
-def strip_dim(filename)
-	$stdout.print("#{filename}:\n")
-	filedata = read_file(filename).freeze
-	outfilename = filename + ".xdf"
-
-	if !DIM.image?(filedata)
-		$stderr.print("#{ProgName}: DIFC.X形式ではありません: #{filename}\n")
 		return
 	end
 
-	case filedata.length
-	when 256 + 77 * 2 * 8 * 1024 # 1261824
-		data = filedata[256, 77 * 2 * 8 * 1024]
+	$stdout.print("  💾 #{image_class.image_formatname} #{image_class.image_extnames_s}\n")
+	image = image_class.new(data:filedata)
+	image.report_all
+end
 
-		$stdout.print("  → #{outfilename}:\n")
-		write_file(outfilename, data)
-	when 256 + 80 * 2 * 8 * 1024 # 1310976
-		data = filedata[256, 77 * 2 * 8 * 1024]
-		data2 = filedata[256 + 77 * 2 * 8 * 1024, (80 - 77) * 2 * 8 * 1024]
-		if data2 != data2[0] * data2.length
-			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
-			return
-		end
+def convert_xdf(filename)
+	$stdout.print("#{filename} → XDF:\n")
+	filedata = IO.binread(filename)
 
-		$stdout.print("  → #{outfilename}:\n")
-		write_file(outfilename, data)
-	when 256 + 85 * 2 * 8 * 1024 # 1392896
-		data = filedata[256, 77 * 2 * 8 * 1024]
-		data2 = filedata[256 + 77 * 2 * 8 * 1024, (85 - 77) * 2 * 8 * 1024]
-		if data2 != data2[0] * data2.length
-			$stderr.print("#{ProgName}: オーバートラックデータがあります: #{filename}\n")
-			return
-		end
-
-		$stdout.print("  → #{outfilename}:\n")
-		write_file(outfilename, data)
-	else
-		$stdout.print("  形式不明(#{filedata.length}バイト)\n")
+	image_class = DiskImage.guess_image_format(data:filedata)
+	if !image_class
+		$stdout.print("  ❓ 形式不明(#{filedata.length}バイト)\n")
+		return
 	end
+
+	$stdout.print("  💾 #{image_class.image_formatname}\n")
+	image = image_class.new(data:filedata)
+
+	if !image.common_geometry?
+		if $force
+			$stdout.print("  一般的なフォーマットではありません: 強行します\n")
+		else
+			$stdout.print("  一般的なフォーマットではありません\n")
+			return
+		end
+	end
+
+	ofilename = filename + XDF.image_extnames.first
+	oimage = XDF.new
+	oimage.copy(image)
+	IO.binwrite(ofilename, oimage.dump)
 end
 
 # 9セクタ2DD 720KBのイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD 640KBのイメージにする
 def truncate_9(filename)
-	$stdout.print("#{filename}:\n")
-	filedata = read_file(filename).freeze
+	$stdout.print("#{filename} → Truncate 9th sector:\n")
+	filedata = IO.binread(filename)
 
-	if filedata.length == 80 * 2 * 9 * 512
-		outdata = ""
-		(0 ... 80 * 2).each do |track|
-			outdata += filedata[track * 9 * 512, 8 * 512]
+	image_class = DiskImage.guess_image_format(data:filedata)
+	if image_class == XDF
+		image = image_class.new(data:filedata)
+
+		if image.nsectors != 9
+			$stdout.print("  9セクタのディスクイメージではありません\n")
+			return
 		end
 
-		outfilename = filename + ".xdf"
-		$stdout.print("  → #{outfilename}:\n")
-		write_file(outfilename, outdata)
-	elsif D88.image?(filedata) && filedata[0x1b].to_byte == 0x10
+		image.track.each do |t|
+			t.sector.delete_if{ |s| s.r >= 9 } # Rが9以上のセクタを削除
+		end
+
+		ofilename = filename + image_class.image_extnames.first
+		$stdout.print("  → #{ofilename}:\n")
+		IO.binwrite(ofilename, image.dump)
+	elsif image_class == D88
+		if filedata[0x1b].to_byte != 0x10
+			$stdout.print("  メディアタイプが2DDではありません\n")
+			return
+		end
+
 		track_offsets = filedata[0x20, 4 * 164].to_dwords
 		header_size = track_offsets.find{ |o| o != 0 }
 		header_tracks = (header_size - 0x20) / 4
@@ -1670,27 +1659,38 @@ def truncate_9(filename)
 
 		outfilename = filename + ".d88"
 		$stdout.print("  → #{outfilename}:\n")
-		write_file(outfilename, outdata)
+		IO.binwrite(outfilename, outdata)
 	else
-		$stdout.print("  形式不明(#{filedata.length}バイト)\n")
+		$stdout.print("  ❓ 形式不明(#{filedata.length}バイト)\n")
 	end
 end
 
 def main(args)
-	action = :identify
+	$action = :identify
+	$force = false
 
 	args.options do |opt|
 		opt.banner = "#{ProgName} v#{Version} #{Copyright}\n" +
 						"Usage: #{ProgName} [options] file..."
 
-		opt.on("--strip-dim",
-		".dim → .xdf 変換") do
-			action = :strip_dim
+		opt.on("--identify",
+		"イメージファイルの情報を表示する") do
+			$action = :identify
 		end
 
-		opt.on("--truncate_9",
-		"9セクタ目を切り捨て") do
-			action = :truncate_9
+		opt.on("--convert-xdf",
+		"XDF形式へ変換する") do
+			$action = :convert_xdf
+		end
+
+		opt.on("--force",
+		"危険な操作を実行する") do
+			$force = true
+		end
+
+		opt.on("--truncate-9",
+		"9セクタ目を切り捨てる") do
+			$action = :truncate_9
 		end
 
 		opt.parse!
@@ -1708,11 +1708,11 @@ def main(args)
 			break
 		end
 
-		case action
+		case $action
 		when :identify
 			fdimageid(an_arg)
-		when :strip_dim
-			strip_dim(an_arg)
+		when :convert_xdf
+			convert_xdf(an_arg)
 		when :truncate_9
 			truncate_9(an_arg)
 		end
