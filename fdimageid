@@ -10,7 +10,7 @@
 require "optparse"
 
 ProgName = "fdimageid"
-Version = "1.01"
+Version = "1.02"
 #=====dpk===== Copyright2024
 Copyright = "Copyright (c) 2024 by opa"
 #=====dpk=====
@@ -168,14 +168,14 @@ class DiskImage
 			return @sector.map{ |s| s.r }
 		end
 
-		# N(セクタ長)番号 不統一の場合は :mix
+		# N(セクタ長) 不統一の場合は :mix
 		def n
 			return nil  if empty?
 			val = @sector.first.n
 			return @sector.all?{ |s| s.n == val } ? val : :mix
 		end
 
-		# セクタ長 不統一の場合は :mix
+		# 実際のセクタ長 不統一の場合は :mix
 		def ssize
 			return nil  if empty?
 			val = @sector.first.ssize
@@ -279,6 +279,35 @@ class DiskImage
 		return @mediatype.nil? && @writeprotect.nil? && @comment.nil? && @track.empty?
 	end
 
+	# メディアタイプを推測
+	def guess_mediatype
+		return nil  if @track.empty?
+
+		wk_cyls = cyls
+		if heads == 2
+			if wk_cyls > 100
+				return :"2td"
+			elsif wk_cyls > 45
+				wk_track_size = nsectors_approx * ssize_approx
+				if wk_track_size > 10240
+					return :"2ed"
+				elsif wk_track_size > 6250
+					return :"2hd"
+				else
+					return :"2dd"
+				end
+			else
+				return :"2d"
+			end
+		else
+			if wk_cyls > 45
+				return :"1dd"
+			else
+				return :"1d"
+			end
+		end
+	end
+
 	# データのある最終トラック番号
 	def ntracks
 		return @track.length
@@ -291,38 +320,55 @@ class DiskImage
 
 	# シリンダ数 (Cの最大値+1)
 	def cyls
-		maxc = nil
-		@track.each do |t|
-			c = t.c
-			next  if !c.is_a?(Integer)
-			maxc = c  if !maxc || c > maxc
-		end
-		return maxc ? (maxc + 1) : nil
+		max = sector.map{ |s| s.c }.max
+		return max ? (max + 1) : nil
 	end
 
 	# ヘッド数 (Hの最大値+1)
 	def heads
-		maxh = nil
-		@track.each do |t|
-			h = t.h
-			next  if !h.is_a?(Integer)
-			maxh = h  if !maxh || h > maxh
-		end
-		return maxh ? (maxh + 1) : nil
+		max = sector.map{ |s| s.h }.max
+		return max ? (max + 1) : nil
 	end
 
 	# 1トラックのセクタ数 不統一の場合は :mix
 	def nsectors
 		return nil  if @track.empty?
-		nsectors = @track.first.nsectors
-		return @track.all?{ |t| t.nsectors == nsectors } ? nsectors : :mix
+		val = @track.first.nsectors
+		return @track.all?{ |t| t.nsectors == val } ? val : :mix
+	end
+
+	# 1トラックのセクタ数 不統一の場合、最多数の値
+	def nsectors_approx
+		return nil  if @track.empty?
+		count = {}
+		@track.each do |trk|
+			val = trk.nsectors
+			count[val] = (count[val] || 0) + 1
+		end
+		return count.to_a.sort_by{ |c| c[1] }.last[0]
 	end
 
 	# 1セクタのセクタ長 不統一の場合は :mix
 	def ssize
-		return nil  if @track.empty?
-		ssize = @track.first.ssize
-		return @track.all?{ |t| t.ssize == ssize } ? ssize : :mix
+		return nil  if (secs = sector).empty?
+		val = secs.first.ssize
+		return secs.all?{ |t| t.ssize == val } ? val : :mix
+	end
+
+	# 1トラックのセクタ数 不統一の場合、最多数の値
+	def ssize_approx
+		return nil  if (secs = sector).empty?
+		count = {}
+		secs.each do |s|
+			val = s.ssize
+			count[val] = (count[val] || 0) + 1
+		end
+		return count.to_a.sort_by{ |c| c[1] }.last[0]
+	end
+
+	# 全トラックのセクタの一次元配列
+	def sector
+		return @track.sum([]){ |t| t.sector }
 	end
 
 	# 全セクタ数
@@ -337,7 +383,7 @@ class DiskImage
 
 	# セクタのデータ(をトラック順>CHR順に連結したもの)
 	def data
-		return @track.map{ |t| t.data }.join
+		return @track.sum(""){ |t| t.data }
 	end
 
 	# (内部用)@track内のnil要素をは空のTrackで埋める
@@ -348,11 +394,11 @@ class DiskImage
 
 	# (内部用)ファイルサイズチェック
 	def excess_data_check(expect, actual)
-		excess_data_length = expect - actual
-		if excess_data_length > 0
-			$stdout.print("  末尾に不要なデータがあります(#{excess_data_length}バイト余剰)\n")
-		elsif excess_data_length < 0
-			$stdout.print("  読み込み中に末尾に達しました(#{-excess_data_length}バイト不足)\n")
+		excess = expect - actual
+		if excess > 0
+			$stdout.print("  末尾に不要なデータがあります(#{excess}バイト余剰)\n")
+		elsif excess < 0
+			$stdout.print("  読み込み中に末尾に達しました(#{-excess}バイト不足)\n")
 		end
 	end
 	protected(:excess_data_check)
@@ -360,11 +406,13 @@ class DiskImage
 	# イメージファイルのデータをselfにロード
 	def load(filedata)
 		$stderr.print("#{ProgName}: #{self.class.name}.load not implemented\n")
+		clear
 	end
 
 	# selfをイメージファイルのデータにシリアライズして返却
 	def dump
 		$stderr.print("#{ProgName}: #{self.class.name}.dump not implemented\n")
+		return nil
 	end
 
 	# 他のDiskImageインスタンスのデータをselfにロード
@@ -375,6 +423,7 @@ class DiskImage
 		@track = another.track.map{ |t| Track.new.copy(t) }
 		@writeprotect = another.writeprotect
 		@comment = another.comment
+		return self
 	end
 
 	# 一般的なフォーマットかどうか
@@ -424,8 +473,6 @@ class DiskImage
 		end
 
 		# セクタ情報の統計を算出
-		nsecs_count = {}
-		ssize_count = {}
 		skip_factor = nil
 		mfm_count = {}
 		ddam_count = 0
@@ -435,11 +482,7 @@ class DiskImage
 		st2_count = {}
 		pda_count = {}
 		@track.each.with_index do |trk, trkno|
-			nsecs = trk.nsectors
-			nsecs_count[nsecs] ||= 0
-			nsecs_count[nsecs] += 1
-
-			sector_count = []
+			r_count = []
 			trk.sector.each.with_index do |s, sec|
 				if s.c > 90
 					$stdout.print("  トラック#{trkno+1}のセクタのCの値が異常です: #{s.c}\n")
@@ -469,21 +512,15 @@ class DiskImage
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
 				end
 
-				ssize_n = 128 << s.n.clamp(0, 6)
-				ssize = s.ssize
-				if ssize_n != ssize
-					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{ssize}\n")
+				ssize_n = 128 << s.n.clamp(0, 6) # Nから求まるセクタサイズ
+				if ssize_n != s.ssize
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{s.ssize}\n")
 				end
 
-				sector_count[s.r] ||= 0
-				sector_count[s.r] += 1
-
-				ssize_count[ssize] ||= 0
-				ssize_count[ssize] += 1
+				r_count[s.r] = (r_count[s.r] || 0) + 1
 
 				if !s.mfm.nil?
-					mfm_count[s.mfm] ||= 0
-					mfm_count[s.mfm] += 1
+					mfm_count[s.mfm] = (mfm_count[s.mfm] || 0) + 1
 				end
 
 				if s.ddam == true # DDAMはtrueの数を数えるだけ
@@ -491,36 +528,31 @@ class DiskImage
 				end
 
 				if s.status && s.status != 0
-					status_count[s.status] ||= 0
-					status_count[s.status] += 1
+					status_count[s.status] = (status_count[s.status] || 0) + 1
 				end
 
 				if s.st0
 					st0 = s.st0 & 0xf8 # Head Address, Unit Select は無視
 					if st0 != 0
-						st0_count[st0] ||= 0
-						st0_count[st0] += 1
+						st0_count[st0] = (st0_count[st0] || 0) + 1
 					end
 				end
 
 				if s.st1 && s.st1 != 0
-					st1_count[s.st1] ||= 0
-					st1_count[s.st1] += 1
+					st1_count[s.st1] = (st1_count[s.st1] || 0) + 1
 				end
 
 				if s.st2 && s.st2 != 0
-					st2_count[s.st2] ||= 0
-					st2_count[s.st2] += 1
+					st2_count[s.st2] = (st2_count[s.st2] || 0) + 1
 				end
 
 				if s.pda
-					pda_count[s.pda] ||= 0
-					pda_count[s.pda] += 1
+					pda_count[s.pda] = (pda_count[s.pda] || 0) + 1
 				end
 			end
 
 			# セクタ番号のヌケ・重複のチェック
-			sector_count.each.with_index do |count, sec|
+			r_count.each.with_index do |count, sec|
 				count ||= 0
 				if sec == 0
 					if count > 0
@@ -537,9 +569,6 @@ class DiskImage
 		end
 
 		# 出現頻度順の配列にする
-		nsecs_major = nsecs_count.to_a.sort_by{ |e| e[1] }.reverse
-		ssize_major = ssize_count.to_a.sort_by{ |e| e[1] }.reverse
-		mfm_major = mfm_count.to_a.sort_by{ |e| e[1] }.reverse
 		status_major = status_count.to_a.sort_by{ |e| e[1] }.reverse
 		st0_major = st0_count.to_a.sort_by{ |e| e[1] }.reverse
 		st1_major = st1_count.to_a.sort_by{ |e| e[1] }.reverse
@@ -547,32 +576,22 @@ class DiskImage
 		pda_major = pda_count.to_a.sort_by{ |e| e[1] }.reverse
 
 		# ジオメトリ算出
-		wk_ssize2 = wk_ssize = ssize
-		if wk_ssize
-			if wk_ssize == :mix
-				wk_ssize2 = ssize_major[0][0]
-				ssize_s = "#{wk_ssize2}バイト(混在あり)"
-			else
-				ssize_s = "#{wk_ssize}バイト"
-			end
+		if (wk_ssize = ssize_approx)
+			ssize_s = "#{wk_ssize}バイト"
+			ssize_s += "(混在あり)"  if ssize == :mix
 		else
 			ssize_s = "0バイト"
 		end
 
-		wk_nsectors2 = wk_nsectors = nsectors
-		if wk_nsectors
-			if wk_nsectors == :mix
-				wk_nsectors2 = nsecs_major[0][0]
-				nsecs_s = "#{wk_nsectors2}セクタ(混在あり)"
-			else
-				nsecs_s = "#{wk_nsectors}セクタ"
-			end
+		if (wk_nsectors = nsectors_approx)
+			nsecs_s = "#{wk_nsectors}セクタ"
+			nsecs_s += "(混在あり)"  if nsectors == :mix
 		else
 			nsecs_s = "セクタなし"
 		end
 
 		wk_ntracks = ntracks
-		if(wk_ntracks == xtracks)
+		if wk_ntracks == xtracks
 			ntracks_s = "#{wk_ntracks}トラック"
 		else
 			ntracks_s = "#{wk_ntracks}(#{xtracks})トラック"
@@ -598,14 +617,14 @@ class DiskImage
 				g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
 				wk_media = @mediatype || g_media
 
-				if wk_total_size == g_size && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors2 == g_nsecs
+				if wk_total_size == g_size && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors == g_nsecs
 					if g_ssize1
-						if wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+						if wk_ssize == g_ssize && track[0].ssize == g_ssize1
 							guess_format = g
 							break
 						end
 					else
-						if wk_ssize2 == g_ssize
+						if wk_ssize == g_ssize
 							guess_format = g
 							break
 						end
@@ -619,14 +638,14 @@ class DiskImage
 				wk_media = @mediatype || g_media
 				cyls_ok = ((wk_cyls <= 45 && g_cyls <= 45) || (wk_cyls > 45 && g_cyls > 45)) ? true : false
 
-				if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors2 == g_nsecs
+				if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors == g_nsecs
 					if g_ssize1
-						if wk_ssize2 == g_ssize && track[0].ssize == g_ssize1
+						if wk_ssize == g_ssize && track[0].ssize == g_ssize1
 							guess_format = g
 							break
 						end
 					else
-						if wk_ssize2 == g_ssize
+						if wk_ssize == g_ssize
 							guess_format = g
 							break
 						end
@@ -649,6 +668,12 @@ class DiskImage
 			end
 		else
 			$stdout.print("  推定フォーマット: 不明 一般的でないフォーマットがされています\n")
+		end
+
+		if guess_mediatype
+			$stdout.print("  推定メディアタイプ: #{mediatype_s(guess_mediatype)}\n")
+		else
+			$stdout.print("  推定メディアタイプ: 不明 一般的でないメディアのようです\n")
 		end
 
 		if skip_factor && skip_factor > 0
@@ -964,9 +989,7 @@ class NFD_R1 < DiskImage
 					filedata[track_offset, 15].unpack("C10VC")
 				track_offset += 0x10
 				data_offset += d_dwDataLen
-
-				sp_read_count[d_cmd] ||= 0
-				sp_read_count[d_cmd] += 1
+				sp_read_count[d_cmd] = (sp_read_count[d_cmd] || 0) + 1
 			end
 		end
 		excess_data_check(filedata.length, data_offset)
@@ -1252,17 +1275,25 @@ class DIP < DiskImage
 	end
 end
 
-# D88 ディスクヘッダ+セクタ毎にヘッダ+データ https://www.pc98.org/project/doc/d88.html https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT
+# D88 ディスクヘッダ+セクタ毎にヘッダ+データ https://github.com/waitingmoon/quasi88/blob/develop/document/FORMAT.TXT https://www.pc98.org/project/doc/d88.html
 class D88 < DiskImage
 	IMAGE_FORMATNAME = "D88形式"
 	IMAGE_EXTNAMES = [".d88", ".d98", ".d77", ".d68", ".88d", ".98d", ".77d", ".68d"]
 	HEADER_SIZE = 0x2a0 # or 0x2b0
+	MEDIA = {
+		0x00 => :"2d",
+		0x10 => :"2dd",
+		0x20 => :"2hd",
+		0x21 => :"2hd", # 2HD 1.44MB NP2kai
+		0x30 => :"1d",
+		0x40 => :"1dd",
+	}
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
 		return filedata[0x10, 10] == "\0" * 10 &&
-			[0x00, 0x10, 0x20, 0x21, 0x30, 0x40].include?(filedata[0x1b].to_byte) &&
+			MEDIA[filedata[0x1b].to_byte] &&
 			filedata[0x1c, 4].to_dword == filedata.length
 	end
 
@@ -1271,20 +1302,11 @@ class D88 < DiskImage
 
 		# Media flag
 		media_flag = filedata[0x1b].to_byte
-		case media_flag
-		when 0x00 # 2D
-			@mediatype = :"2d"
-		when 0x10 # 2DD
-			@mediatype = :"2dd"
-		when 0x20 # 2HD
-			@mediatype = :"2hd"
-		when 0x21 # 2HD 1.44MB NP2kai
-			$stdout.print("  ヘッダのメディアタイプ: 2HD 1.44MB NP2kai拡張\n")
-			@mediatype = :"2hd"
-		when 0x30 # 1D
-			@mediatype = :"1d"
-		when 0x40 # 1DD
-			@mediatype = :"1dd"
+		if MEDIA[media_flag]
+			if media_flag == 0x21
+				$stdout.print("  ヘッダのメディアタイプ: 2HD 1.44MB NP2kai拡張\n")
+			end
+			@mediatype = MEDIA[media_flag]
 		else
 			$stdout.print("  ヘッダのメディアタイプ不明: #{media_flag.to_hex}\n")
 			@mediatype = :unknown
@@ -1383,6 +1405,69 @@ class D88 < DiskImage
 			end
 		end
 	end
+
+	def dump
+		max_tracks = 164 # 164 (or 160)
+		np2kai_ext = true
+
+		case @mediatype || guess_mediatype
+		when :"2d"
+			disk_type = 0x00 # 2D
+		when :"2dd"
+			disk_type = 0x10 # 2DD
+		when :"2hd", :"2ed", :"2td"
+			if np2kai_ext && nsectors_approx * ssize_approx > 8704
+				disk_type = 0x21 # 2HD 1.44MB NP2kai
+			else
+				disk_type = 0x20 # 2HD
+			end
+		when :"1d"
+			disk_type = 0x30 # 1D
+		when :"1dd"
+			disk_type = 0x40 # 1DD
+		else
+			$stdout.print("  ディスクタイプが不明です: 2HDを設定します\n")
+			disk_type = 0x20 # 2HD
+		end
+
+		trackdata = []
+		(0 ... ntracks.clamp(0, max_tracks)).each do |trkno|
+			trackdata1 = ""
+			trk = @track[trkno]
+			trk.sector.each do |s|
+				sector_header = [
+					s.c,
+					s.h,
+					s.r,
+					s.n,
+					trk.nsectors,
+					(s.mfm.nil? ? true : s.mfm) ? 0x00 : 0x40, # FM/MFM
+					(s.ddam.nil? ? false : s.ddam) ? 0x10 : 0x00, # DDAM
+					s.status || 0,
+					(disk_type == 0x21) ? 1 : 0, # NP2kai RPM
+					s.ssize,
+				].pack("C4vC3x4Cv")
+
+				trackdata1 += sector_header
+				trackdata1 += s.data
+			end
+			trackdata << trackdata1
+		end
+
+		offset = 0x20 + 4 * max_tracks
+		track_table = trackdata.map{ |t| r = offset; offset += t.length; r }
+		track_table[max_tracks - 1] ||= nil
+		track_table = track_table.map{ |t| t || 0 }.pack("V*")
+
+		header = [
+			(@comment || "").encode(Encoding::WINDOWS_31J), # disk name
+			(@writeprotect.nil? ? false : @writeprotect) ? 0x10 : 0x00, # write protect
+			disk_type,
+			offset, # disk size
+		].pack("a17x9C2V")
+
+		return header + track_table + trackdata.join
+	end
 end
 
 # Anex86 ヘッダ(通常4096バイト)+べたデータ https://www.pc98.org/project/doc/hdi.html
@@ -1390,12 +1475,17 @@ class FDI < DiskImage
 	IMAGE_FORMATNAME = "Anex86 FDI形式"
 	IMAGE_EXTNAMES = [".fdi"]
 	HEADER_SIZE = 0x20 # コメント除く最小サイズ
+	MEDIA = {
+		0x90 => :"2hd", # 2HD 1.2MB
+		0x30 => :"2hd", # 2HD 1.44MB
+		0x10 => :"2dd", # 2DD 640KB or 720KB
+	}
 
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
 		return filedata[0, 4].to_dword == 0 &&
-			[0x90, 0x30, 0x10].include?(filedata[4, 4].to_dword) &&
+			MEDIA[filedata[4, 4].to_dword] &&
 			filedata[0x8, 4].to_dword + filedata[0xc, 4].to_dword == filedata.length
 	end
 
@@ -1403,13 +1493,8 @@ class FDI < DiskImage
 		clear
 
 		fddtype_id = filedata[4, 4].to_dword
-		case fddtype_id
-		when 0x90 # 2HD 1.2MB
-			@mediatype = :"2hd"
-		when 0x30 # 2HD 1.44MB
-			@mediatype = :"2hd"
-		when 0x10 # 2DD 640KB or 720KB
-			@mediatype = :"2dd"
+		if MEDIA[fddtype_id]
+			@mediatype = MEDIA[fddtype_id]
 		else
 			$stdout.print("  メディアタイプ不明: #{fddtype_id.to_hex}\n")
 			@mediatype = :unknown
@@ -1537,18 +1622,19 @@ class XDF < DiskImage
 	IMAGE_FORMATNAME = "べたイメージ"
 	IMAGE_EXTNAMES = [".xdf", ".tfd", ".vfd", ".dsk", ".dup", ".flp", ".hdb", ".hdm", ".2hd", ".2dd", ".2d", ".1d"]
 	HEADER_SIZE = 0
+	GEOMETRIES = COMMON_GEOMETRIES
 
 	def self.image?(filedata)
-		return COMMON_GEOMETRIES.find{ |g| g[1] == filedata.length } ? true : false
+		return GEOMETRIES.find{ |g| g[1] == filedata.length } ? true : false
 	end
 
 	def load(filedata)
 		clear
 
-		geom = COMMON_GEOMETRIES.find{ |g| g[1] == filedata.length }
+		geom = GEOMETRIES.find{ |g| g[1] == filedata.length }
 		cyls, heads, nsecs, ssize, ssize1 = geom[3 .. 7]
 
-		if COMMON_GEOMETRIES.count{ |g| g[1] == filedata.length } >= 2
+		if GEOMETRIES.count{ |g| g[1] == filedata.length } >= 2
 			$stdout.print("  ジオメトリの候補が複数あります: #{geom[0]}と仮定します\n")
 		end
 
@@ -1593,8 +1679,8 @@ def fdimageid(filename)
 	image.report_all
 end
 
-def convert_xdf(filename)
-	$stdout.print("#{filename} → XDF:\n")
+def convert_to(outclass, filename)
+	$stdout.print("#{filename} → #{outclass.name}:\n")
 	filedata = IO.binread(filename)
 
 	image_class = DiskImage.guess_image_format(data:filedata)
@@ -1615,8 +1701,8 @@ def convert_xdf(filename)
 		end
 	end
 
-	ofilename = filename + XDF.image_extnames.first
-	oimage = XDF.new
+	ofilename = filename + outclass.image_extnames.first
+	oimage = outclass.new
 	oimage.copy(image)
 	IO.binwrite(ofilename, oimage.dump)
 end
@@ -1627,7 +1713,7 @@ def truncate_9(filename)
 	filedata = IO.binread(filename)
 
 	image_class = DiskImage.guess_image_format(data:filedata)
-	if image_class == XDF
+	if image_class == XDF || image_class == D88
 		image = image_class.new(data:filedata)
 
 		if image.nsectors != 9
@@ -1642,37 +1728,6 @@ def truncate_9(filename)
 		ofilename = filename + image_class.image_extnames.first
 		$stdout.print("  → #{ofilename}:\n")
 		IO.binwrite(ofilename, image.dump)
-	elsif image_class == D88
-		if filedata[0x1b].to_byte != 0x10
-			$stdout.print("  メディアタイプが2DDではありません\n")
-			return
-		end
-
-		track_offsets = filedata[0x20, 4 * 164].to_dwords
-		header_size = track_offsets.find{ |o| o != 0 }
-		header_tracks = (header_size - 0x20) / 4
-		track_offsets = track_offsets.first(header_tracks)
-
-		outdata = filedata[0, header_size]
-		(0 ... header_tracks).each do |track|
-			track_offset = track_offsets[track]
-			if track_offset != 0
-				outdata[0x20 + 4 * track, 4] = [outdata.length].pack("V")
-
-				(0 ... 8).each do |r|
-					data = filedata[track_offset + 0x210 * r, 0x210]
-					fail if data[4, 2].to_word != 9
-					data[4, 2] = [8].pack("v")
-					outdata += data
-				end
-			end
-		end
-
-		outdata[0x1c, 4] = [outdata.length].pack("V") # Disk size
-
-		outfilename = filename + ".d88"
-		$stdout.print("  → #{outfilename}:\n")
-		IO.binwrite(outfilename, outdata)
 	else
 		$stdout.print("  ❓ 形式不明(#{filedata.length}バイト)\n")
 	end
@@ -1681,6 +1736,7 @@ end
 def main(args)
 	$action = :identify
 	$force = false
+	$truncate_overtrack = false
 
 	args.options do |opt|
 		opt.banner = "#{ProgName} v#{Version} #{Copyright}\n" +
@@ -1696,10 +1752,20 @@ def main(args)
 			$action = :convert_xdf
 		end
 
+		opt.on("--convert-d88",
+		"D88形式へ変換する") do
+			$action = :convert_d88
+		end
+
 		opt.on("--force",
 		"危険な操作を実行する") do
 			$force = true
 		end
+
+		# opt.on("--truncate-overtrack",
+		# "オーバートラック部分を切り捨てる") do
+		# 	$truncate_overtrack = true
+		# end
 
 		opt.on("--truncate-9",
 		"9セクタ目を切り捨てる") do
@@ -1725,7 +1791,9 @@ def main(args)
 		when :identify
 			fdimageid(an_arg)
 		when :convert_xdf
-			convert_xdf(an_arg)
+			convert_to(XDF, an_arg)
+		when :convert_d88
+			convert_to(D88, an_arg)
 		when :truncate_9
 			truncate_9(an_arg)
 		end
