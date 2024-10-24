@@ -79,7 +79,7 @@ class DiskImage
 
 	def self.guess_image_format(filename:nil, data:nil)
 		data = IO.binread(filename)  if filename
-		return [DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, DIP, D88, FDI, DCU, XDF].find{ |c| c.image?(data) }
+		return [DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, MAHALITO, HFE, SCP, DIP, D88, FDI, DCU, XDF].find{ |c| c.image?(data) }
 	end
 
 	def self.mediatype_s(mediatype)
@@ -508,6 +508,8 @@ class DiskImage
 					skip_factor = sec - 1
 				end
 
+				r_count[s.r] = (r_count[s.r] || 0) + 1
+
 				if s.n > 6
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値が異常です: #{s.n}\n")
 				end
@@ -516,8 +518,6 @@ class DiskImage
 				if ssize_n != s.ssize
 					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{s.ssize}\n")
 				end
-
-				r_count[s.r] = (r_count[s.r] || 0) + 1
 
 				if !s.mfm.nil?
 					mfm_count[s.mfm] = (mfm_count[s.mfm] || 0) + 1
@@ -1223,6 +1223,48 @@ class ERCVFD < DiskImage
 	end
 end
 
+# MAHALITO形式 フォーマットデータファイル + セクタデータファイル https://www.vector.co.jp/soft/dos/util/se000604.html
+class MAHALITO < DiskImage
+	IMAGE_FORMATNAME = "MAHALITO形式"
+	IMAGE_EXTNAMES = [".dat", ".2hd", ".2dd", ".2d"]
+	HEADER_SIZE = 11
+
+	def self.image?(filedata)
+		# Chek .2hd .2dd .2d file
+		return false  if filedata.length < HEADER_SIZE
+
+		id = filedata[0, 10]
+		return (id == "ver 1.10  ") || (id == "2DD ver1.0") || (id == "2D  ver1.0")
+	end
+end
+
+# HxC Floppy Emulator HFE形式 https://hxc2001.com/floppy_drive_emulator/HFE-file-format.html
+class HFE < DiskImage
+	IMAGE_FORMATNAME = "HxC Floppy Emulator HFE形式"
+	IMAGE_EXTNAMES = [".hfe"]
+	HEADER_SIZE = 512
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		id = filedata[0, 8]
+		return id == "HXCPICFE" || id == "HXCHFEV3"
+	end
+end
+
+# SuperCard Pro Flux Disk Image SCP形式 https://www.cbmstuff.com/downloads/scp/scp_image_specs.txt https://github.com/keirf/disk-utilities/tree/master/scp
+class SCP < DiskImage
+	IMAGE_FORMATNAME = "SuperCard Pro Flux Disk Image SCP形式"
+	IMAGE_EXTNAMES = [".scp"]
+	HEADER_SIZE = 688
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 3] == "SCP"
+	end
+end
+
 # DIP ヘッダ(256バイト)+べたデータ(1261568バイト) https://www.pc98.org/project/doc/dip.html
 class DIP < DiskImage
 	IMAGE_FORMATNAME = "DIP形式"
@@ -1432,7 +1474,7 @@ class D88 < DiskImage
 
 		trackdata = []
 		(0 ... ntracks.clamp(0, max_tracks)).each do |trkno|
-			trackdata1 = ""
+			trackdata1 = "".force_encoding(Encoding::BINARY)
 			trk = @track[trkno]
 			trk.sector.each do |s|
 				sector_header = [
@@ -1664,7 +1706,7 @@ class XDF < DiskImage
 	end
 end
 
-def fdimageid(filename)
+def identify(filename)
 	$stdout.print("#{filename}:\n")
 	filedata = IO.binread(filename)
 
@@ -1707,7 +1749,7 @@ def convert_to(outclass, filename)
 	IO.binwrite(ofilename, oimage.dump)
 end
 
-# 9セクタ2DD 720KBのイメージの各トラックの9セクタ目を切り捨てて8セクタ2DD 640KBのイメージにする
+# 9セクタ/トラックのイメージの各トラックの9セクタ目を切り捨てて8セクタのイメージにする
 def truncate_9(filename)
 	$stdout.print("#{filename} → Truncate 9th sector:\n")
 	filedata = IO.binread(filename)
@@ -1789,7 +1831,7 @@ def main(args)
 
 		case $action
 		when :identify
-			fdimageid(an_arg)
+			identify(an_arg)
 		when :convert_xdf
 			convert_to(XDF, an_arg)
 		when :convert_d88
