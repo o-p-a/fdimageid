@@ -65,6 +65,12 @@ class DiskImage
 
 	attr_accessor(:track, :mediatype, :writeprotect, :comment)
 
+	def self.image_formsts
+		return [
+			DIM, NFD_r0, NFD_r1, SLF, V98FDD, ERCVFD, MAHALITO, HFE, SCP, DIP, D88, FDI, DCU, XDF,
+		]
+	end
+
 	def self.image_formatname
 		return self::IMAGE_FORMATNAME
 	end
@@ -79,7 +85,7 @@ class DiskImage
 
 	def self.guess_image_format(filename:nil, data:nil)
 		data = IO.binread(filename)  if filename
-		return [DIM, NFD_R0, NFD_R1, SLF, V98FDD, ERCVFD, MAHALITO, HFE, SCP, DIP, D88, FDI, DCU, XDF].find{ |c| c.image?(data) }
+		return image_formsts.find{ |c| c.image?(data) }
 	end
 
 	def self.mediatype_s(mediatype)
@@ -283,15 +289,14 @@ class DiskImage
 	def guess_mediatype
 		return nil  if @track.empty?
 
-		wk_cyls = cyls
 		if heads == 2
-			if wk_cyls > 100
+			if cyls > 100
 				return :"2td"
-			elsif wk_cyls > 45
-				wk_track_size = nsectors_approx * ssize_approx
-				if wk_track_size > 10240
+			elsif cyls > 45
+				track_length = nsectors_approx * ssize_approx
+				if track_length > 10240
 					return :"2ed"
-				elsif wk_track_size > 6250
+				elsif track_length > 6250
 					return :"2hd"
 				else
 					return :"2dd"
@@ -300,7 +305,7 @@ class DiskImage
 				return :"2d"
 			end
 		else
-			if wk_cyls > 45
+			if cyls > 45
 				return :"1dd"
 			else
 				return :"1d"
@@ -426,23 +431,42 @@ class DiskImage
 		return self
 	end
 
-	# 一般的なフォーマットかどうか
+	# 一般的なフォーマットかどうか (厳密チェック)
 	def common_geometry?
-		w_size, w_media, w_cyls, w_heads, w_nsecs, w_ssize = total_size, mediatype, cyls, heads, nsectors, ssize
-
 		COMMON_GEOMETRIES.each do |g|
 			g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
 
-			if w_size == g_size && (w_media.nil? || w_media == g_media) && w_cyls == g_cyls && w_heads == g_heads && w_nsecs == g_nsecs
-				if g_ssize1
-					if track[0].ssize == g_ssize1 && track[1].ssize == g_ssize
-						return g # ≒ true
-					end
-				else
-					if w_ssize == g_ssize
-						return g # ≒ true
-					end
-				end
+			if total_size == g_size && (mediatype.nil? || mediatype == g_media) && cyls == g_cyls && heads == g_heads && nsectors == g_nsecs
+				return g  if g_ssize1 ? (ssize_approx == g_ssize && track[0].ssize == g_ssize1) : (ssize == g_ssize)
+			end
+		end
+
+		return nil # ≒ false
+	end
+
+	# 一般的なフォーマットでいうと何が近いか (曖昧チェック)
+	def common_geometry_approx?
+		r = common_geometry? # 厳密チェックで一致する分にはそれを返す
+		return r  if r
+
+		# セクタ数、セクタ長について代表値を使ってのチェック
+		COMMON_GEOMETRIES.each.with_index do |g, i|
+			g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
+			wk_media = @mediatype || g_media
+
+			if total_size == g_size && wk_media == g_media && cyls == g_cyls && heads == g_heads && nsectors_approx == g_nsecs
+				return g  if g_ssize1 ? (ssize_approx == g_ssize && track[0].ssize == g_ssize1) : (ssize_approx == g_ssize)
+			end
+		end
+
+		# 総データサイズとシリンダ数も曖昧検索
+		COMMON_GEOMETRIES.each.with_index do |g, i|
+			g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[2 .. 7]
+			wk_media = @mediatype || g_media
+			cyls_ok = ((cyls <= 45 && g_cyls <= 45) || (cyls > 45 && g_cyls > 45)) ? true : false
+
+			if wk_media == g_media && cyls_ok && heads == g_heads && nsectors_approx == g_nsecs
+				return g  if g_ssize1 ? (ssize_approx == g_ssize && track[0].ssize == g_ssize1) : (ssize_approx == g_ssize)
 			end
 		end
 
@@ -576,15 +600,15 @@ class DiskImage
 		pda_major = pda_count.to_a.sort_by{ |e| e[1] }.reverse
 
 		# ジオメトリ算出
-		if (wk_ssize = ssize_approx)
-			ssize_s = "#{wk_ssize}バイト"
+		if (wk_ssize_approx = ssize_approx)
+			ssize_s = "#{wk_ssize_approx}バイト"
 			ssize_s += "(混在あり)"  if ssize == :mix
 		else
 			ssize_s = "0バイト"
 		end
 
-		if (wk_nsectors = nsectors_approx)
-			nsecs_s = "#{wk_nsectors}セクタ"
+		if (wk_nsectors_approx = nsectors_approx)
+			nsecs_s = "#{wk_nsectors_approx}セクタ"
 			nsecs_s += "(混在あり)"  if nsectors == :mix
 		else
 			nsecs_s = "セクタなし"
@@ -611,49 +635,7 @@ class DiskImage
 		$stdout.print("  #{wk_cyls}シリンダ x #{wk_heads}ヘッド x #{nsecs_s} x #{ssize_s} = #{wk_total_size}バイト(#{total_size_kb})\n")
 
 		# 推定フォーマット
-		guess_format = common_geometry? # 普通に厳密チェック
-		if !guess_format # セクタ数、セクタ長について代表値を使ったチェック
-			COMMON_GEOMETRIES.each.with_index do |g, i|
-				g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[1 .. 7]
-				wk_media = @mediatype || g_media
-
-				if wk_total_size == g_size && wk_media == g_media && wk_cyls == g_cyls && wk_heads == g_heads && wk_nsectors == g_nsecs
-					if g_ssize1
-						if wk_ssize == g_ssize && track[0].ssize == g_ssize1
-							guess_format = g
-							break
-						end
-					else
-						if wk_ssize == g_ssize
-							guess_format = g
-							break
-						end
-					end
-				end
-			end
-		end
-		if !guess_format # 総データサイズとシリンダ数も曖昧検索
-			COMMON_GEOMETRIES.each.with_index do |g, i|
-				g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = g[2 .. 7]
-				wk_media = @mediatype || g_media
-				cyls_ok = ((wk_cyls <= 45 && g_cyls <= 45) || (wk_cyls > 45 && g_cyls > 45)) ? true : false
-
-				if wk_media == g_media && cyls_ok && wk_heads == g_heads && wk_nsectors == g_nsecs
-					if g_ssize1
-						if wk_ssize == g_ssize && track[0].ssize == g_ssize1
-							guess_format = g
-							break
-						end
-					else
-						if wk_ssize == g_ssize
-							guess_format = g
-							break
-						end
-					end
-				end
-			end
-		end
-
+		guess_format = common_geometry_approx?
 		if guess_format
 			g_desc, g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = guess_format
 
@@ -670,6 +652,7 @@ class DiskImage
 			$stdout.print("  推定フォーマット: 不明 一般的でないフォーマットがされています\n")
 		end
 
+		# 推定メディアタイプ
 		if guess_mediatype
 			$stdout.print("  推定メディアタイプ: #{mediatype_s(guess_mediatype)}\n")
 		else
@@ -828,8 +811,8 @@ class DIM < DiskImage
 	end
 end
 
-# T98Next R0 ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
-class NFD_R0 < DiskImage
+# T98Next r0 ヘッダ(68112バイト)+べたデータ https://www.pc98.org/project/doc/nfdr0.txt
+class NFD_r0 < DiskImage
 	IMAGE_FORMATNAME = "T98-Next NFD r0形式"
 	IMAGE_EXTNAMES = [".nfd"]
 	HEADER_SIZE = 0x10a10
@@ -902,8 +885,8 @@ class NFD_R0 < DiskImage
 	end
 end
 
-# T98Next R1 ヘッダ(全体(960バイト)+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
-class NFD_R1 < DiskImage
+# T98Next r1 ヘッダ(全体(960バイト)+セクタ+特殊読み込み)+データ https://www.pc98.org/project/doc/nfdr1.txt
+class NFD_r1 < DiskImage
 	IMAGE_FORMATNAME = "T98-Next NFD r1形式"
 	IMAGE_EXTNAMES = [".nfd"]
 	HEADER_SIZE = 0x3c0
@@ -1306,7 +1289,10 @@ class DIP < DiskImage
 	end
 
 	def dump
-		return nil  if total_size != 77 * 2 * 8 * 1024
+		if total_size != 77 * 2 * 8 * 1024
+			$stdout.print("  DIP形式は2HD 1.23MB専用です\n")
+			return nil
+		end
 
 		header = [
 			MAGICWORD,
@@ -1706,6 +1692,13 @@ class XDF < DiskImage
 	end
 end
 
+# セクタデータをランダムな値で塗り潰す
+def image_randomize(image)
+	image.sector.each do |s|
+		s.data = Random.bytes(s.ssize)
+	end
+end
+
 def identify(filename)
 	$stdout.print("#{filename}:\n")
 	filedata = IO.binread(filename)
@@ -1734,6 +1727,20 @@ def convert_to(outclass, filename)
 	$stdout.print("  💾 #{image_class.image_formatname}\n")
 	image = image_class.new(data:filedata)
 
+	if $truncate_overtrack
+		g = image.common_geometry_approx?
+		if g
+			ntracks_limit = g[3] * g[4]
+		elsif image.ntracks > 90
+			ntracks_limit = 160
+		elsif image.ntracks > 45
+			ntracks_limit = 80
+		else
+			ntracks_limit = 40
+		end
+		image.track = image.track.first(ntracks_limit)
+	end
+
 	if !image.common_geometry?
 		if $force
 			$stdout.print("  一般的なフォーマットではありません: 強行します\n")
@@ -1749,6 +1756,39 @@ def convert_to(outclass, filename)
 	IO.binwrite(ofilename, oimage.dump)
 end
 
+# 空のイメージファイルを作成する
+def create_blank(ofilename)
+	outclass = $format
+	g_desc, g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = $geometry
+
+	$stdout.print("Create new file: #{ofilename}\n")
+	image = outclass.new
+	$stdout.print("  💾 #{outclass.image_formatname}\n")
+	$stdout.print("  #{g_desc}\n")
+
+	image.mediatype = g_media
+	(0 ... g_cyls).each do |cyl|
+		(0 ... g_heads).each do |head|
+			trkno = cyl * g_heads + head
+			trk_ssize = (g_ssize1 && trkno == 0) ? g_ssize1 : g_ssize # 最初のトラックだけセクタ長が異なる場合
+			trk = (image.track[trkno] ||= DiskImage::Track.new)
+			(1 .. g_nsecs).each do |sec|
+				s = DiskImage::Sector.new
+				s.c = cyl # シリンダは0オリジン
+				s.h = head # ヘッドは0オリジン
+				s.r = sec # レコードは1オリジン
+				s.n = (trk_ssize / 128).bit_length - 1
+				s.data = "\xe5".force_encoding(Encoding::BINARY) * trk_ssize
+				trk.sector << s
+			end
+		end
+	end
+
+	image_randomize(image)  if $random
+
+	IO.binwrite(ofilename, image.dump)
+end
+
 # 9セクタ/トラックのイメージの各トラックの9セクタ目を切り捨てて8セクタのイメージにする
 def truncate_9(filename)
 	$stdout.print("#{filename} → Truncate 9th sector:\n")
@@ -1759,7 +1799,7 @@ def truncate_9(filename)
 		image = image_class.new(data:filedata)
 
 		if image.nsectors != 9
-			$stdout.print("  9セクタのディスクイメージではありません\n")
+			$stdout.print("  9セクタのディスクジオメトリではありません\n")
 			return
 		end
 
@@ -1775,10 +1815,37 @@ def truncate_9(filename)
 	end
 end
 
+def show_formats
+	$stdout.print("サポートするイメージファイルフォーマット(I=識別のみ R=読み込みのみ):\n")
+	DiskImage.image_formsts.sort_by{ |c| c.name }.each do |imageclass|
+		$stdout.print("  %-10s" % imageclass.name)
+		if !imageclass.method_defined?(:load, false)
+			$stdout.print(" (I) ")
+		elsif !imageclass.method_defined?(:dump, false)
+			$stdout.print(" (R) ")
+		else
+			$stdout.print("     ")
+		end
+		$stdout.print("#{imageclass::IMAGE_FORMATNAME}\n")
+	end
+end
+
+def show_geometries
+	$stdout.print("一般的なディスクジオメトリの一覧:\n")
+	DiskImage::COMMON_GEOMETRIES.each do |g|
+		$stdout.print("  %-20s" % "\"#{g[0]}\"")
+
+		$stdout.print(" %3d x %1d x %2d x %4d%s\n" % [g[3], g[4], g[5], g[6], (g[7] ? "/#{g[7]}" : "")])
+	end
+end
+
 def main(args)
 	$action = :identify
+	$format = nil
+	$geometry = nil
 	$force = false
 	$truncate_overtrack = false
+	$random = false
 
 	args.options do |opt|
 		opt.banner = "#{ProgName} v#{Version} #{Copyright}\n" +
@@ -1789,25 +1856,75 @@ def main(args)
 			$action = :identify
 		end
 
-		opt.on("--convert-xdf",
-		"XDF形式へ変換する") do
-			$action = :convert_xdf
+		opt.on("--convert",
+		"ファイルフォーマットを変換する") do
+			$action = :convert
 		end
 
-		opt.on("--convert-d88",
-		"D88形式へ変換する") do
-			$action = :convert_d88
+		opt.on("--create-blank",
+		"空のイメージファイルを作成する") do
+			$action = :create_blank
 		end
 
-		opt.on("--force",
-		"危険な操作を実行する") do
-			$force = true
-		end
-
-		# opt.on("--truncate-overtrack",
-		# "オーバートラック部分を切り捨てる") do
-		# 	$truncate_overtrack = true
+		# opt.on("--compare",
+		# "イメージファイルのデータを比較する") do
+		# 	$action = :compare
 		# end
+
+		opt.on("--format=xxx", String,
+		"ファイルフォーマットを指定する") do |f|
+			candidates = DiskImage.image_formsts.filter{ |ff| ff.name.upcase.include?(f.upcase) }
+			if candidates.length == 1
+				$format = candidates.first
+			elsif candidates.length > 1
+				candidates_s = candidates.map{ |f| "#{f.name}?" }.join(" ")
+				$stderr.print("#{ProgName}: Ambiguous format: #{f} -> #{candidates_s}\n")
+				return 1
+			else
+				$stderr.print("#{ProgName}: Unknown format: #{f}\n")
+				return 1
+			end
+		end
+
+		opt.on("--geometry=xxx", String,
+		"ディスクジオメトリを指定する") do |g|
+			candidates = DiskImage::COMMON_GEOMETRIES.filter{ |gg| gg[0].upcase.include?(g.upcase) }
+			if candidates.length == 1
+				$geometry = candidates.first
+			elsif candidates.length > 1
+				candidates_s = candidates.map{ |g| "\"#{g[0]}\"?" }.join(" ")
+				$stderr.print("#{ProgName}: Ambiguous geometry: #{g} -> #{candidates_s}\n")
+				return 1
+			else
+				$stderr.print("#{ProgName}: Unknown geometry: #{g}\n")
+				return 1
+			end
+		end
+
+		opt.on("--show-formats",
+		"使用できるファイルフォーマットの一覧を表示する") do
+			$action = :show_formats
+		end
+
+		opt.on("--show-geometries",
+		"一般的なジオメトリの一覧を表示する") do
+			$action = :show_geometries
+		end
+
+		opt.on("--force", TrueClass,
+		"危険な操作を実行する") do |v|
+			$force = v
+		end
+
+		opt.on("--truncate-overtrack", TrueClass,
+		"オーバートラック部分を切り捨てる") do |v|
+			$truncate_overtrack = v
+		end
+
+		opt.on("--random", TrueClass,
+		"セクタデータをランダムな値で塗り潰す") do |v|
+			$random = v
+		end
 
 		opt.on("--truncate-9",
 		"9セクタ目を切り捨てる") do
@@ -1815,29 +1932,61 @@ def main(args)
 		end
 
 		opt.parse!
-		print(opt.help)  if args.empty?
-	end
 
-	args.each do |an_arg|
-		if !File.exist?(an_arg)
-			$stderr.print("#{ProgName}: File not found: #{an_arg}\n")
-			break
-		end
-
-		if !File.file?(an_arg)
-			$stderr.print("#{ProgName}: Not a file: #{an_arg}\n")
-			break
+		if $action == :identify && args.empty?
+			print(opt.help)
+			return 0
 		end
 
 		case $action
-		when :identify
-			identify(an_arg)
-		when :convert_xdf
-			convert_to(XDF, an_arg)
-		when :convert_d88
-			convert_to(D88, an_arg)
-		when :truncate_9
-			truncate_9(an_arg)
+		when :show_formats
+			show_formats
+		when :show_geometries
+			show_geometries
+		when :create_blank
+			if !$format
+				$stderr.print("#{ProgName}: ファイルフォーマットが指定されていません(--format=)\n")
+				return 1
+			end
+
+			if !$geometry
+				$stderr.print("#{ProgName}: ディスクジオメトリが指定されていません(--geometry=)\n")
+				return 1
+			end
+
+			args.each do |an_arg|
+				if File.exist?(an_arg)
+					$stderr.print("#{ProgName}: File already exist: #{an_arg}\n")
+					next
+				end
+
+				create_blank(an_arg)
+			end
+		else
+			args.each do |an_arg|
+				if !File.exist?(an_arg)
+					$stderr.print("#{ProgName}: File not found: #{an_arg}\n")
+					next
+				end
+
+				if !File.file?(an_arg)
+					$stderr.print("#{ProgName}: Not a file: #{an_arg}\n")
+					next
+				end
+
+				case $action
+				when :identify
+					identify(an_arg)
+				when :convert
+					if !$format
+						$stderr.print("#{ProgName}: 変換先フォーマットが指定されていません(--format=)\n")
+						return 1
+					end
+					convert_to($format, an_arg)
+				when :truncate_9
+					truncate_9(an_arg)
+				end
+			end
 		end
 	end
 
