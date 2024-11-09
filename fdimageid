@@ -45,11 +45,11 @@ class DiskImage
 		["2HC 1.2MB PC/AT",  1228800, :"2hd",   80,    2,   15,  512],
 		["2HD 1.00MB",       1025024, :"2hd",   77,    2,   26,  256],
 		["2HD 1.04MB",       1064960, :"2hd",   80,    2,   26,  256],
-		["2HD Disk BASIC",   1021696, :"2hd",   77,    2,   26,  256,  128],
+		["2HD DISK BASIC",   1021696, :"2hd",   77,    2,   26,  256,  128],
 		["2DD 800KB",         819200, :"2dd",   80,    2,   10,  512],
 		["2DD 720KB MSX",     737280, :"2dd",   80,    2,    9,  512],
 		["2DD 640KB",         655360, :"2dd",   80,    2,    8,  512],
-		["2DD Disk BASIC",    655360, :"2dd",   80,    2,   16,  256],
+		["2DD DISK BASIC",    655360, :"2dd",   80,    2,   16,  256],
 		["2D 360KB",          368640, :"2d",    40,    2,    9,  512],
 		["1DD 360KB",         368640, :"1dd",   80,    1,   18,  256],
 		["2D 320KB",          327680, :"2d",    40,    2,   16,  256],
@@ -446,6 +446,8 @@ class DiskImage
 
 	# 一般的なフォーマットでいうと何が近いか (曖昧チェック)
 	def common_geometry_approx?
+		return nil  if @track.empty?
+
 		r = common_geometry? # 厳密チェックで一致する分にはそれを返す
 		return r  if r
 
@@ -505,6 +507,7 @@ class DiskImage
 		st1_count = {}
 		st2_count = {}
 		pda_count = {}
+		wk_heads = heads
 		@track.each.with_index do |trk, trkno|
 			r_count = []
 			trk.sector.each.with_index do |s, sec|
@@ -512,15 +515,15 @@ class DiskImage
 					$stdout.print("  トラック#{trkno+1}のセクタのCの値が異常です: #{s.c}\n")
 				end
 
-				if s.c != trkno / 2
+				if s.c != trkno / wk_heads
 					$stdout.print("  トラック#{trkno+1}のセクタのCの値が特殊です: C:#{s.c} (!=#{trkno / 2})\n")
 				end
 
-				if s.h > 1
+				if s.h >= wk_heads
 					$stdout.print("  トラック#{trkno+1}のセクタのHの値が異常です: #{s.h}\n")
 				end
 
-				if s.h != trkno % 2
+				if s.h != trkno % wk_heads
 					$stdout.print("  トラック#{trkno+1}のセクタのHの値が特殊です: H:#{s.h} (!=#{trkno % 2})\n")
 				end
 
@@ -740,7 +743,7 @@ class DIM < DiskImage
 		0x02 => COMMON_GEOMETRIES.find_desc("2HC 1.2MB PC/AT"),
 		0x03 => COMMON_GEOMETRIES.find_desc("2HS/2HDE 1.44MB"), # 2HDE
 		0x09 => COMMON_GEOMETRIES.find_desc("2HQ 1.44MB PC/AT"),
-		0x11 => COMMON_GEOMETRIES.find_desc("2HD Disk BASIC"),
+		0x11 => COMMON_GEOMETRIES.find_desc("2HD DISK BASIC"),
 	}
 
 	def self.image?(filedata)
@@ -828,6 +831,10 @@ class NFD_r0 < DiskImage
 
 		@comment = filedata[0x10, 0x100].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 		dwHeadSize = filedata[0x10 + 0x100, 4].to_dword
+		known_headsize = 0x10 + 0x100 + 0x10 + 163*26*0x10 + 0x10
+		if dwHeadSize != known_headsize
+			$stdout.print("  ヘッダ部のヘッダサイズが不正: #{dwHeadSize.to_hex} != #{known_headsize.to_hex}\n")
+		end
 		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
 		byHead = filedata[0x10 + 0x100 + 5].to_byte
 		$stdout.print("  ヘッダ部のヘッド数: #{byHead}\n")
@@ -1126,7 +1133,6 @@ class V98FDD < DiskImage
 	def load(filedata)
 		clear
 
-		@mediatype = :"2hd" # 違ったらあとでリセット
 		@comment = filedata[0x8, 0x80].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 		@writeprotect = (filedata[0x88, 2].to_word != 0) ? true : false
 		special_read_drive = filedata[0x8a, 2].to_word
@@ -1167,9 +1173,19 @@ class V98FDD < DiskImage
 					s.mfm = nil
 				end
 
-				if hd != 1
-					$stdout.print("  トラック#{trkno+1}に2HDフラグが1でないセクタがあります: #{hd}\n")
-					@mediatype = nil
+				case hd
+				when 0
+					@mediatype ||= :"2dd"
+					if @mediatype != :"2dd"
+						$stdout.print("  トラック#{trkno+1}で2HDフラグの混在があります\n")
+					end
+				when 1
+					@mediatype ||= :"2hd"
+					if @mediatype != :"2hd"
+						$stdout.print("  トラック#{trkno+1}で2HDフラグの混在があります\n")
+					end
+				else
+					$stdout.print("  トラック#{trkno+1}に2HDフラグが0または1でないセクタがあります: #{hd}\n")
 				end
 
 				ssize = 128 << s.n
@@ -1578,8 +1594,8 @@ class DCU < DiskImage
 		0x04 => COMMON_GEOMETRIES.find_desc("2DD 640KB"),        # 512byte x 8sector
 		0x05 => COMMON_GEOMETRIES.find_desc("2DD 720KB MSX"),    # 512byte x 9sector
 		0x08 => COMMON_GEOMETRIES.find_desc("2HS/2HDE 1.44MB"),  # 1024byte x 9sector
-		0x11 => COMMON_GEOMETRIES.find_desc("2HD Disk BASIC"),
-		0x19 => COMMON_GEOMETRIES.find_desc("2DD Disk BASIC"),
+		0x11 => COMMON_GEOMETRIES.find_desc("2HD DISK BASIC"),
+		0x19 => COMMON_GEOMETRIES.find_desc("2DD DISK BASIC"),
 		0x21 => COMMON_GEOMETRIES.find_desc("2HD 1.04MB"),       # 256byte x 26sector
 	}
 
