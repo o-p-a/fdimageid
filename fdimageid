@@ -67,7 +67,7 @@ class DiskImage
 
 	def self.image_formsts
 		return [
-			DIM, NFD_r0, NFD_r1, SLF, V98FDD, ERCVFD, MAHALITO, HFE, SCP, DIP, D88, FDI, DCU, XDF,
+			DIM, NFD_r0, NFD_r1, NHD, SLF, V98FDD, ERCVFD, MAHALITO, HFE, SCP, DIP, D88, FDI, DCU, XDF,
 		]
 	end
 
@@ -543,7 +543,7 @@ class DiskImage
 
 				ssize_n = 128 << s.n.clamp(0, 6) # Nから求まるセクタサイズ
 				if ssize_n != s.ssize
-					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{ssize_n} != #{s.ssize}\n")
+					$stdout.print("  トラック#{trkno+1}のセクタのNの値と実際のサイズが異なります: N:#{s.n}(#{ssize_n}バイト) != #{s.ssize}\n")
 				end
 
 				if !s.mfm.nil?
@@ -834,6 +834,9 @@ class NFD_r0 < DiskImage
 		known_headsize = 0x10 + 0x100 + 0x10 + 163*26*0x10 + 0x10
 		if dwHeadSize != known_headsize
 			$stdout.print("  ヘッダ部のヘッダサイズが不正: #{dwHeadSize.to_hex} != #{known_headsize.to_hex}\n")
+			if dwHeadSize < known_headsize # 既知のヘッダサイズより小さいのは異常
+				dwHeadSize = known_headsize
+			end
 		end
 		@writeprotect = (filedata[0x10 + 0x100 + 4].to_byte != 0) ? true : false
 		byHead = filedata[0x10 + 0x100 + 5].to_byte
@@ -1027,6 +1030,19 @@ class NFD_r1 < DiskImage
 	end
 end
 
+# T98Next r0 HDD (識別のみ) https://akiyuki.boy.jp/old/t98next/nhdr0.txt
+class NHD < DiskImage
+	IMAGE_FORMATNAME = "T98-Next NHD r0形式"
+	IMAGE_EXTNAMES = [".nhd"]
+	HEADER_SIZE = 0x200
+
+	def self.image?(filedata)
+		return false  if filedata.length < HEADER_SIZE
+
+		return filedata[0, 15] == "T98HDDIMAGE.R0\0"
+	end
+end
+
 # SL9821 フォーマットヘッダ(16バイト)+トラックヘッダ(32*80*2=5120バイト)+データ https://www.satotomi.com/pifdc/pifdc_slf.html https://www.satotomi.com/sl9821/sl9821.html
 class SLF < DiskImage
 	IMAGE_FORMATNAME = "SL9821 SLF形式"
@@ -1197,7 +1213,7 @@ class V98FDD < DiskImage
 		end
 		sweep_niltrack
 
-		if special_read_drive != 0xffff
+		if special_read_drive != 0xffff && special_read_drive != 0
 			$stdout.print("  特殊読み込みドライブ設定があります: #{special_read_drive.to_hex}\n")
 
 			next_point = special_read_drive # 0xc3dc
@@ -1312,7 +1328,7 @@ class DIP < DiskImage
 
 		header = [
 			MAGICWORD,
-			@comment.encode(Encoding::WINDOWS_31J),
+			@comment.encode(Encoding::WINDOWS_31J, undef: :replace),
 		].pack("a16a240")
 
 		return header + data
@@ -1336,7 +1352,7 @@ class D88 < DiskImage
 	def self.image?(filedata)
 		return false  if filedata.length < HEADER_SIZE
 
-		return filedata[0x10, 10] == "\0" * 10 &&
+		return filedata[0x11, 9] == "\0" * 9 &&
 			MEDIA[filedata[0x1b].to_byte] &&
 			filedata[0x1c, 4].to_dword == filedata.length
 	end
@@ -1360,7 +1376,7 @@ class D88 < DiskImage
 		@writeprotect = (filedata[0x1a].to_byte == 0) ? false : true
 
 		# Disk name / comment
-		@comment = filedata[0, 16].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
+		@comment = filedata[0, 17].force_encoding(Encoding::WINDOWS_31J).encode.sub(/\0+$/, "")
 
 		# Track data
 		track_offsets = filedata[0x20, 4 * 164].to_dwords
@@ -1418,11 +1434,11 @@ class D88 < DiskImage
 
 					ssize = 128 << s.n
 					if ssize != datasize
-						$stdout.print("  トラック#{trkno+1}のセクタのNの値とデータサイズが異なります: N:#{datasize} (!=#{ssize})\n")
+						$stdout.print("  トラック#{trkno+1}のセクタのNの値とデータサイズが異なります: N:#{s.n}(#{ssize}バイト) != #{datasize}\n")
 					end
 
-					s.data = filedata[offset, ssize] || ""
-					offset += ssize
+					s.data = filedata[offset, datasize] || ""
+					offset += datasize
 
 					trk.sector << s
 				end while trk.nsectors < nsecs
@@ -1504,7 +1520,7 @@ class D88 < DiskImage
 		track_table = track_table.map{ |t| t || 0 }.pack("V*")
 
 		header = [
-			(@comment || "").encode(Encoding::WINDOWS_31J), # disk name
+			(@comment || "").encode(Encoding::WINDOWS_31J, undef: :replace), # disk name
 			(@writeprotect.nil? ? false : @writeprotect) ? 0x10 : 0x00, # write protect
 			disk_type,
 			offset, # disk size
@@ -1773,7 +1789,7 @@ def convert_to(outclass, filename)
 end
 
 # 空のイメージファイルを作成する
-def create_blank(ofilename)
+def create_image(ofilename)
 	outclass = $format
 	g_desc, g_size, g_media, g_cyls, g_heads, g_nsecs, g_ssize, g_ssize1 = $geometry
 
@@ -1877,9 +1893,9 @@ def main(args)
 			$action = :convert
 		end
 
-		opt.on("--create-blank",
+		opt.on("--create-image",
 		"空のイメージファイルを作成する") do
-			$action = :create_blank
+			$action = :create_image
 		end
 
 		# opt.on("--compare",
@@ -1959,7 +1975,7 @@ def main(args)
 			show_formats
 		when :show_geometries
 			show_geometries
-		when :create_blank
+		when :create_image
 			if !$format
 				$stderr.print("#{ProgName}: ファイルフォーマットが指定されていません(--format=)\n")
 				return 1
@@ -1976,7 +1992,7 @@ def main(args)
 					next
 				end
 
-				create_blank(an_arg)
+				create_image(an_arg)
 			end
 		else
 			args.each do |an_arg|
